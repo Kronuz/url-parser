@@ -1,5 +1,7 @@
 # url-parser
 
+[![CI](https://github.com/Kronuz/url-parser/actions/workflows/ci.yml/badge.svg)](https://github.com/Kronuz/url-parser/actions/workflows/ci.yml)
+
 A small C++20 parser that splits a URL path and query string into their
 components. Extracted from [Xapiand](https://github.com/Kronuz/Xapiand).
 
