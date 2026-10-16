@@ -50,7 +50,7 @@ the *normally* decoded buffer, so the caller sees the real value. A key with no
 ## PathParser
 
 The path parser runs in two passes because a Xapiand path packs several optional
-pieces into one string: an optional `host@` prefix, a path, a last-segment id,
+pieces into one string: a path, optionally `path@host` naming a node, a last-segment id,
 an optional `{...}` field selector, and an optional `:command` suffix.
 
 `init()` scans **backward** from the end. Going right-to-left is what makes the

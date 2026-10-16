@@ -14,7 +14,9 @@ test/test.cc                 Runnable smoke test: urldecode, QueryParser, PathPa
 examples/demo.cc             A runnable tour (not a test).
 CMakeLists.txt               STATIC library `url_parser` (+ alias url_parser::url_parser); FetchContent char-classify; CTest test `url_parser`.
 LICENSE                      MIT, Copyright (c) 2015-2019 Dubalu LLC.
-README.md                    What it is, install, usage, API.
+README.md                    What it is, install, quick start.
+docs/API.md                  The API reference and caveats.
+docs/url-parser.d2           The README diagram's source (docs/url-parser.svg is rendered from it).
 ARCHITECTURE.md              The decoded-buffer model, the backward/forward path passes, normalize_path.
 ```
 

@@ -1,0 +1,25 @@
+# url-parser: a request path split into its parts, and query keys read on demand.
+# Render: d2 --layout elk --sketch --theme 302 docs/url-parser.d2 docs/url-parser.svg
+direction: right
+
+path: path {
+  label: "twitter@node1/1234:count"
+}
+
+parts: PathParser {
+  hst: "host: node1"
+  pth: "path: twitter"
+  id: "id: 1234"
+  cmd: "command: :count"
+}
+
+query: query {
+  label: "foo=1&bar=hello%20world&flag"
+}
+
+qp: QueryParser {
+  label: "next(\"bar\") → \"hello world\"\nnext(\"flag\") → \"\""
+}
+
+path -> parts: "init() · next()"
+query -> qp
