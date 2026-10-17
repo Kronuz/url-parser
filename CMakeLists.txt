@@ -11,7 +11,7 @@ include(FetchContent)
 FetchContent_Declare(
   char_classify
   GIT_REPOSITORY https://github.com/Kronuz/char-classify.git
-  GIT_TAG        main
+  GIT_TAG        306ecd96d55d47d9bd3167eaeb7877e40d0631ac
 )
 FetchContent_MakeAvailable(char_classify)
 
