@@ -41,6 +41,17 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(url_parser_test PRIVATE url_parser)
   add_test(NAME url_parser COMMAND url_parser_test)
 
+  # libFuzzer target (Clang): cmake -DURL_PARSER_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
+  option(URL_PARSER_FUZZ "Build the libFuzzer target" OFF)
+  if(URL_PARSER_FUZZ)
+    add_executable(url_parser_fuzz fuzz/fuzz_parse.cc url_parser.cc)
+    target_include_directories(url_parser_fuzz PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(url_parser_fuzz PRIVATE char_classify::char_classify)
+    target_compile_features(url_parser_fuzz PRIVATE cxx_std_20)
+    target_compile_options(url_parser_fuzz PRIVATE -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all)
+    target_link_options(url_parser_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  endif()
+
   # A runnable tour of the library (not a test): build & run ./build/url_parser_demo
   add_executable(url_parser_demo examples/demo.cc)
   target_link_libraries(url_parser_demo PRIVATE url_parser)
