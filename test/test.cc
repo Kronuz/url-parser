@@ -10,7 +10,9 @@
 // Build via CMake: cmake -B build && cmake --build build && ctest --test-dir build
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -190,12 +192,65 @@ static void test_path_command_and_host() {
 }
 
 
+// ---------------------------------------------------------------------------
+// Buffer boundaries: the input sits in an exactly-sized heap block (no NUL
+// after it), so an escape cut at the end must not read past it. Sizes straddle
+// 64 KiB, where a q= URL was seen to end inside a "%XX".
+// ---------------------------------------------------------------------------
+
+#define CHECK(cond) do { if (!(cond)) { std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); std::abort(); } } while (0)
+
+static std::unique_ptr<char[]> exact(std::string_view s) {
+	auto b = std::make_unique<char[]>(s.size());
+	std::memcpy(b.get(), s.data(), s.size());
+	return b;
+}
+
+static void test_boundaries() {
+	for (size_t n : {size_t(65535), size_t(65536), size_t(65537)}) {
+		struct { std::string tail, want; } cases[] = {
+			{"%", "%"}, {"%4", "%4"}, {"%41", "A"}, {"%zz", "%zz"}, {"%4z", "%4z"},
+			{"+%", " %"}, {"%%", "%%"}, {"%2", "%2"}, {"%25", "%"},
+		};
+		for (auto& c : cases) {
+			std::string body(n - c.tail.size(), 'a');
+			std::string in = body + c.tail;
+			auto b = exact(in);
+			CHECK(urldecode(b.get(), in.size()) == body + c.want);
+			CHECK(urldecode(std::string_view(b.get(), in.size())) == body + c.want);
+
+			// As a q= value, the way a server hands it over.
+			std::string url = "q=" + in;
+			auto ub = exact(url);
+			QueryParser qp;
+			CHECK(qp.init(std::string_view(ub.get(), url.size())) == 0);
+			CHECK(qp.next("q") == 0);
+			CHECK(qp.get() == body + c.want);
+		}
+	}
+	// Tiny inputs: every prefix of an escape at the very end of the block.
+	for (std::string in : {"%", "%4", "%41", "a%", "a%4", "&%", "=%4", "%%4"}) {
+		auto b = exact(in);
+		(void)urldecode(b.get(), in.size());
+		QueryParser qp;
+		qp.init(std::string_view(b.get(), in.size()));
+	}
+	// An empty path has no last character to inspect.
+	{
+		PathParser pp;
+		CHECK(pp.init("") == PathParser::State::PTH);
+	}
+	std::printf("boundaries OK: escapes cut at 65535/65536/65537 bytes\n");
+}
+
+
 int main() {
 	test_urldecode();
 	test_query_parser();
 	test_path_basic();
 	test_path_normalize();
 	test_path_command_and_host();
+	test_boundaries();
 	std::printf("all url_parser tests passed\n");
 	return 0;
 }

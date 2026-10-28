@@ -119,7 +119,8 @@ urldecode(const void *p, size_t size, char plus, char amp, char colon, char eq, 
 				buf.push_back(eq);
 				break;
 			case '%': {
-				auto dec = chars::hexdec(&q);
+				// hexdec reads two bytes; only call it when both are inside the buffer.
+				auto dec = (p_end - q >= 2) ? chars::hexdec(&q) : -1;
 				if (dec >= 0) {
 					// Reset c, try the special characters again
 					c = (encoded && dec != '{' && dec != ',' && dec != '}')
@@ -300,7 +301,7 @@ PathParser::init(std::string_view p)
 
 	off = ni;
 
-	if (path.back() == '/') {
+	if (path.empty() || path.back() == '/') {
 		return State::PTH;
 	}
 
