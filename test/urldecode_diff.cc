@@ -1,5 +1,5 @@
 // Differential test: the single-pass urldecode, QueryParser::init and
-// PathParser::init against the frozen original (urldecode_old.h) on edge cases
+// PathParser::init against the reference decoder (urldecode_old.h) on edge cases
 // and random inputs, for the default and the remapped separator sets.
 #include <cstdio>
 #include <cstdlib>
@@ -44,7 +44,7 @@ static void check_one(const std::string& in) {
 			std::abort();
 		}
 	}
-	// The parsers fill both buffers in one pass; each must equal the two old passes.
+	// The parsers fill both buffers in one pass; each must equal a separate reference decode.
 	std::string_view sv(b.get(), in.size());
 	QueryParser qp;
 	qp.init(sv);

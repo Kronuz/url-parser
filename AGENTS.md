@@ -10,8 +10,8 @@ easy to fall into.
 ```
 url_parser.h                 Declares urldecode() and the QueryParser / PathParser classes. Header. Verbatim from Xapiand.
 url_parser.cc                urldecode (SIMD-scanned, single pass), the two parsers, and the inlined normalize_path. Decoupled from Xapiand (see below).
-test/urldecode_diff.cc       Differential test (CTest `url_parser_diff`) against the frozen original test/urldecode_old.h.
-bench/bench_url.cc           Benchmark vs the frozen original, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON).
+test/urldecode_diff.cc       Differential test (CTest `url_parser_diff`) against the reference test/urldecode_old.h.
+bench/bench_url.cc           Benchmark vs the reference decoder, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON).
 test/test.cc                 Runnable smoke test: urldecode, QueryParser, PathParser, and the normalize_path collapsing.
 examples/demo.cc             A runnable tour (not a test).
 CMakeLists.txt               STATIC library `url_parser` (+ alias url_parser::url_parser); FetchContent char-classify; CTest test `url_parser`.
@@ -43,33 +43,32 @@ The test and demo are only added when this repo is the top-level project
 `url_parser.cc` has no dependencies of its own (it decodes hex through a local
 table). CMake still fetches the sibling
 [char-classify](https://github.com/Kronuz/char-classify) library and links it
-`PUBLIC`, for consumers that relied on its include path and because
-`test/urldecode_old.h` (the frozen original decoder, the oracle for
+`PUBLIC`, for consumers that use its include path and because
+`test/urldecode_old.h` (the byte-at-a-time reference decoder, the oracle for
 `test/urldecode_diff.cc`) uses `chars::hexdec`.
 
 ## Standalone vs. Xapiand
 
 This is a standalone extraction from
-[Xapiand](https://github.com/Kronuz/Xapiand). `url_parser.h` was copied
-verbatim. `url_parser.cc` carries two decoupling edits, and they are the only
-deltas from upstream:
+[Xapiand](https://github.com/Kronuz/Xapiand). `url_parser.h` matches upstream
+verbatim. `url_parser.cc` differs from upstream in three ways:
 
-- **`normalize_path` inlined.** Upstream `url_parser.cc` did
-  `#include "fs.hh"` for the single call `normalize_path(p, false, true)` in
-  `PathParser::init`. That function is pure string manipulation (no filesystem
-  access), so both its overloads were copied verbatim from Xapiand's `src/fs.cc`
-  into an anonymous namespace at the top of this file, and the `"fs.hh"` include
-  was dropped. Keep the copyright attribution comment on the copied helper.
-- **Trace logging removed.** Upstream included `"log.h"`, defined
-  `L_URL_PARSER`, and had a handful of `L_URL_PARSER(...)` trace calls in the
-  parse path (including one `repr(path)` dump). A standalone parser does not log,
-  so the include, the macro, and every `L_*` call were removed. The blocks they
-  sat in (the two big state-name-dumping lambdas in `init` / `next`) were dropped
-  cleanly, leaving the `switch (cn)` that followed them. There is no remaining
-  `L_*` / `log.h` / `opts` / `config` / `repr` reference.
+- **`normalize_path` inlined.** Upstream includes `"fs.hh"` for the single call
+  `normalize_path(p, false, true)` in `PathParser::init`. That function is pure
+  string manipulation (no filesystem access), so both overloads sit verbatim from
+  Xapiand's `src/fs.cc` in an anonymous namespace at the top of this file, and
+  there is no `"fs.hh"` include. Keep the copyright attribution comment on the
+  copied helper.
+- **No trace logging.** Upstream includes `"log.h"`, defines `L_URL_PARSER`, and
+  traces the parse path (including a `repr(path)` dump and two state-name-dumping
+  lambdas in `init` / `next`). This copy has none of them; the `switch (cn)` that
+  follows them upstream is unchanged. There is no `L_*` / `log.h` / `opts` /
+  `config` / `repr` reference.
+- **Single-pass decoder.** `urldecode` scans 16 bytes per step and the parsers fill
+  both buffers in one pass (see `ARCHITECTURE.md`). Its output matches the
+  byte-at-a-time decoder in `test/urldecode_old.h`.
 
-Any future change should be reconcilable with upstream as a plain edit on top of
-those two deltas.
+Keep any change reconcilable with upstream as a plain edit on top of those deltas.
 
 ## Conventions
 

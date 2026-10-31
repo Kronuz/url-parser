@@ -1,6 +1,5 @@
-// Frozen copy of the original byte-at-a-time urldecode, kept only as the oracle
-// for test/urldecode_diff.cc. Do not "improve" it: its job is to stay identical
-// to the behavior the library had before the single-pass rewrite.
+// Byte-at-a-time reference urldecode, the oracle for test/urldecode_diff.cc.
+// Keep it unchanged: the library's output must match it byte for byte.
 #pragma once
 
 #include <string>

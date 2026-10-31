@@ -195,7 +195,7 @@ static void test_path_command_and_host() {
 // ---------------------------------------------------------------------------
 // Buffer boundaries: the input sits in an exactly-sized heap block (no NUL
 // after it), so an escape cut at the end must not read past it. Sizes straddle
-// 64 KiB, where a q= URL was seen to end inside a "%XX".
+// 64 KiB, where a long q= URL can end inside a "%XX".
 // ---------------------------------------------------------------------------
 
 #define CHECK(cond) do { if (!(cond)) { std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); std::abort(); } } while (0)

@@ -94,6 +94,6 @@ delimiter-remapping trick lets each scan switch on a single byte instead of
 comparing multibyte separators. Keeping a second, normally-decoded buffer in
 lockstep means values can be returned as `string_view`s with no extra copy. The
 backward-then-forward split on the path is what lets all the trailing pieces be
-optional without backtracking. `normalize_path` is inlined and the trace logging
-is gone, and the hex table is local; the char-classify link is kept only so existing
-consumers keep their include path (the test oracle uses it).
+optional without backtracking. `normalize_path` is inlined, the parser does no
+logging, and the hex table is local. The library links char-classify only so consumers
+keep its include path, and the test oracle uses it.
