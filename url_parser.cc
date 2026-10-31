@@ -24,9 +24,16 @@
 #include "url_parser.h"
 
 #include <cassert>                                // for assert
-#include <cstring>                                // for std::strncmp
+#include <cstdint>                                // for std::uint64_t
+#include <cstring>                                // for std::strncmp, std::memcpy
 
-#include "chars.hh"                               // for chars::hexdec
+// URL_PARSER_NO_SIMD forces the portable SWAR scanner (the test builds it too).
+#if defined(URL_PARSER_NO_SIMD)
+#elif defined(__ARM_NEON) && defined(__aarch64__)
+#include <arm_neon.h>
+#elif defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 
 namespace {
@@ -96,59 +103,225 @@ normalize_path(std::string_view src, bool slashed, bool keep_slash)
 }  // namespace
 
 
+namespace {
+
+// Nibble value of an ASCII hex digit, 0xff for any other byte.
+struct HexTable {
+	unsigned char v[256];
+	constexpr HexTable() : v() {
+		for (int i = 0; i < 256; ++i) { v[i] = 0xff; }
+		for (int i = 0; i < 10; ++i) { v['0' + i] = static_cast<unsigned char>(i); }
+		for (int i = 0; i < 6; ++i) { v['a' + i] = v['A' + i] = static_cast<unsigned char>(10 + i); }
+	}
+};
+constexpr HexTable hex_table;
+
+struct Subst {
+	char plus, amp, colon, eq, encoded;
+};
+
+// The byte written for a (literal or decoded) byte `c`: the four separator
+// characters are replaced by their substitutes, everything else is verbatim.
+inline char
+subst(char c, const Subst& m) noexcept
+{
+	switch (c) {
+		case '+': return m.plus;
+		case '&': return m.amp;
+		case ';': return m.colon;
+		case '=': return m.eq;
+		default: return c;
+	}
+}
+
+// Finds the first byte of a block that the decoder must look at: '%' and '+' always,
+// plus '&' ';' '=' when `N` is 5 (they matter only if their substitutes differ from
+// themselves). `first(p)` examines W bytes at `p` and returns the index of the first
+// such byte, or W if there is none. NEON and SSE2 compare 16 bytes at once; the
+// portable fallback is a 64-bit SWAR test.
+template <int N>
+struct Scanner {
+	const char (&set)[N];
+#if !defined(URL_PARSER_NO_SIMD) && defined(__ARM_NEON) && defined(__aarch64__)
+	static constexpr size_t W = 16;
+	uint8x16_t rep[N];
+	explicit Scanner(const char (&s)[N]) : set(s) {
+		for (int i = 0; i < N; ++i) { rep[i] = vdupq_n_u8(static_cast<uint8_t>(s[i])); }
+	}
+	size_t first(const char* p) const noexcept {
+		uint8x16_t v = vld1q_u8(reinterpret_cast<const uint8_t*>(p));
+		uint8x16_t hit = vceqq_u8(v, rep[0]);
+		for (int i = 1; i < N; ++i) { hit = vorrq_u8(hit, vceqq_u8(v, rep[i])); }
+		// One nibble per byte: the lowest set nibble is the first hit.
+		std::uint64_t m = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(hit), 4)), 0);
+		return m ? static_cast<size_t>(__builtin_ctzll(m)) >> 2 : W;
+	}
+#elif !defined(URL_PARSER_NO_SIMD) && defined(__SSE2__)
+	static constexpr size_t W = 16;
+	__m128i rep[N];
+	explicit Scanner(const char (&s)[N]) : set(s) {
+		for (int i = 0; i < N; ++i) { rep[i] = _mm_set1_epi8(s[i]); }
+	}
+	size_t first(const char* p) const noexcept {
+		__m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+		__m128i hit = _mm_cmpeq_epi8(v, rep[0]);
+		for (int i = 1; i < N; ++i) { hit = _mm_or_si128(hit, _mm_cmpeq_epi8(v, rep[i])); }
+		unsigned m = static_cast<unsigned>(_mm_movemask_epi8(hit));
+		return m ? static_cast<size_t>(__builtin_ctz(m)) : W;
+	}
+#else
+	static constexpr size_t W = 8;
+	std::uint64_t rep[N];
+	explicit Scanner(const char (&s)[N]) : set(s) {
+		for (int i = 0; i < N; ++i) { rep[i] = 0x0101010101010101ULL * static_cast<unsigned char>(s[i]); }
+	}
+	size_t first(const char* p) const noexcept {
+		std::uint64_t v;
+		std::memcpy(&v, p, 8);
+		std::uint64_t h = 0;
+		for (int i = 0; i < N; ++i) {
+			std::uint64_t x = v ^ rep[i];
+			h |= (x - 0x0101010101010101ULL) & ~x & 0x8080808080808080ULL;
+		}
+		if (!h) { return W; }
+		// Bits above the first zero byte may be false positives, so locate it bytewise.
+		for (size_t k = 0; k < W; ++k) {
+			for (int i = 0; i < N; ++i) { if (p[k] == set[i]) { return k; } }
+		}
+		return W;
+	}
+#endif
+	bool is_special(char c) const noexcept {
+		for (int i = 0; i < N; ++i) { if (c == set[i]) { return true; } }
+		return false;
+	}
+	// First special byte of [p, end), or end.
+	const char* find(const char* p, const char* end) const noexcept {
+		while (static_cast<size_t>(end - p) >= W) {
+			size_t k = first(p);
+			if (k != W) { return p + k; }
+			p += W;
+		}
+		for (; p != end; ++p) { if (is_special(*p)) { return p; } }
+		return end;
+	}
+};
+
+// One pass over [p, end), the decoded bytes written through `o1` and, when `Dual`,
+// the bytes of the plain decoding (`urldecode(p, size)` defaults) through `o2`; the
+// two outputs always have the same length, which is returned. Blocks of clean bytes
+// are copied wholesale while they are scanned: a block is stored first, then the
+// output advances only past the bytes before the first special one. `o1` (and `o2`)
+// must have room for the whole input, which also covers the over-copy (output never
+// outruns input).
+template <bool Dual, int N>
+size_t
+decode_core(const char* p, const char* end, const Subst& m, const char (&set)[N], char* o1, char* o2) noexcept
+{
+	const Scanner<N> scan(set);
+	char* o = o1;
+	for (;;) {
+		const char* s;
+		if (static_cast<size_t>(end - p) >= Scanner<N>::W) {
+			size_t k = scan.first(p);
+			std::memcpy(o, p, Scanner<N>::W);
+			if (Dual) { std::memcpy(o2 + (o - o1), p, Scanner<N>::W); }
+			if (k == Scanner<N>::W) {
+				p += Scanner<N>::W;
+				o += Scanner<N>::W;
+				continue;
+			}
+			s = p + k;
+			o += k;
+		} else {
+			// Fewer than a block left: byte by byte.
+			s = p;
+			while (s != end && !scan.is_special(*s)) {
+				*o = *s;
+				if (Dual) { o2[o - o1] = *s; }
+				++o;
+				++s;
+			}
+			if (s == end) { break; }
+		}
+		p = s + 1;
+		char c = *s;
+		char plain = c;
+		if (c == '%') {
+			// Only decode when both hex digits are inside the buffer.
+			if (end - p >= 2) {
+				unsigned hi = hex_table.v[static_cast<unsigned char>(p[0])];
+				unsigned lo = hex_table.v[static_cast<unsigned char>(p[1])];
+				if ((hi | lo) != 0xff) {
+					p += 2;
+					c = static_cast<char>(hi << 4 | lo);
+					plain = c;
+					if (m.encoded && c != '{' && c != ',' && c != '}') { c = m.encoded; }
+				}
+			}
+		}
+		if (Dual) { o2[o - o1] = subst(plain, Subst{' ', '&', ';', '=', '\0'}); }
+		*o++ = subst(c, m);
+		if (p == end) { break; }
+	}
+	return static_cast<size_t>(o - o1);
+}
+
+inline bool
+mapped_separators(const Subst& m) noexcept
+{
+	return m.amp != '&' || m.colon != ';' || m.eq != '=';
+}
+
+template <typename F>
+inline void
+fill(std::string& s, size_t size, F&& f)
+{
+#if defined(__cpp_lib_string_resize_and_overwrite)
+	s.resize_and_overwrite(size, [&](char* d, size_t) { return f(d); });
+#else
+	s.resize(size);
+	s.resize(f(&s[0]));
+#endif
+}
+
+}  // namespace
+
+
 std::string
 urldecode(const void *p, size_t size, char plus, char amp, char colon, char eq, char encoded)
 {
+	if (size == 0) { return std::string(); }
+	const Subst m{plus, amp, colon, eq, encoded};
+	const auto* q = static_cast<const char *>(p);
+	const char* end = q + size;
+	static constexpr char lean[2] = {'%', '+'};
+	static constexpr char full[5] = {'%', '+', '&', ';', '='};
 	std::string buf;
-	buf.reserve(size);
-	const auto* q = (const char *)p;
-	auto p_end = q + size;
-	while (q != p_end) {
-		char c = *q++;
-		switch (c) {
-			case '+':
-				buf.push_back(plus);
-				break;
-			case '&':
-				buf.push_back(amp);
-				break;
-			case ';':
-				buf.push_back(colon);
-				break;
-			case '=':
-				buf.push_back(eq);
-				break;
-			case '%': {
-				// hexdec reads two bytes; only call it when both are inside the buffer.
-				auto dec = (p_end - q >= 2) ? chars::hexdec(&q) : -1;
-				if (dec >= 0) {
-					// Reset c, try the special characters again
-					c = (encoded && dec != '{' && dec != ',' && dec != '}')
-						? encoded
-						: dec;
-				}
-			}
-			[[fallthrough]];
-			default:
-				switch (c) {
-					case '+':
-						buf.push_back(plus);
-						break;
-					case '&':
-						buf.push_back(amp);
-						break;
-					case ';':
-						buf.push_back(colon);
-						break;
-					case '=':
-						buf.push_back(eq);
-						break;
-					default:
-						buf.push_back(c);
-				}
-		}
-	}
+	auto run = [&](const auto& scan, const auto& set) {
+		const char* first = scan.find(q, end);
+		// Clean input (nothing to decode or map): one bulk copy, no zero-fill.
+		if (first == end) { buf.assign(q, size); return; }
+		fill(buf, size, [&](char* d) {
+			std::memcpy(d, q, static_cast<size_t>(first - q));
+			return static_cast<size_t>(first - q) + decode_core<false>(first, end, m, set, d + (first - q), nullptr);
+		});
+	};
+	if (mapped_separators(m)) { run(Scanner<5>(full), full); } else { run(Scanner<2>(lean), lean); }
 	return buf;
+}
+
+
+// Fills `a` with urldecode(p, size, m...) and `b` with urldecode(p, size), in one pass.
+static void
+urldecode2(const char* p, size_t size, const Subst& m, std::string& a, std::string& b)
+{
+	static constexpr char full[5] = {'%', '+', '&', ';', '='};
+	a.resize(size);
+	b.resize(size);
+	size_t n = size ? decode_core<true>(p, p + size, m, full, &a[0], &b[0]) : 0;
+	a.resize(n);
+	b.resize(n);
 }
 
 
@@ -178,8 +351,7 @@ int
 QueryParser::init(std::string_view q)
 {
 	clear();
-	query = urldecode(q, ' ', '\0', '\0', '\1', '%');
-	query_decoded = urldecode(q);
+	urldecode2(q.data(), q.size(), Subst{' ', '\0', '\0', '\1', '%'}, query, query_decoded);
 	return 0;
 }
 
@@ -286,8 +458,7 @@ PathParser::init(std::string_view p)
 	auto np = normalize_path(p, false, true);
 
 	clear();
-	path = urldecode(np, ' ', '&', ';', '=', '%');
-	path_decoded = urldecode(np);
+	urldecode2(np.data(), np.size(), Subst{' ', '&', ';', '=', '%'}, path, path_decoded);
 
 	char cn;
 	size_t length;

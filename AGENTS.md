@@ -9,7 +9,9 @@ easy to fall into.
 
 ```
 url_parser.h                 Declares urldecode() and the QueryParser / PathParser classes. Header. Verbatim from Xapiand.
-url_parser.cc                urldecode, the two parsers, and the inlined normalize_path. Includes "chars.hh" for chars::hexdec. Decoupled from Xapiand (see below).
+url_parser.cc                urldecode (SIMD-scanned, single pass), the two parsers, and the inlined normalize_path. Decoupled from Xapiand (see below).
+test/urldecode_diff.cc       Differential test (CTest `url_parser_diff`) against the frozen original test/urldecode_old.h.
+bench/bench_url.cc           Benchmark vs the frozen original, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON).
 test/test.cc                 Runnable smoke test: urldecode, QueryParser, PathParser, and the normalize_path collapsing.
 examples/demo.cc             A runnable tour (not a test).
 CMakeLists.txt               STATIC library `url_parser` (+ alias url_parser::url_parser); FetchContent char-classify; CTest test `url_parser`.
@@ -38,12 +40,12 @@ The test and demo are only added when this repo is the top-level project
 
 ## Dependency
 
-`url_parser.cc` includes `"chars.hh"` for one symbol, `chars::hexdec` (reads the
-two hex digits of a `%NN` escape through a `const char**`). That header lives in
-the sibling [char-classify](https://github.com/Kronuz/char-classify) library,
-pulled in by CMake and linked `PUBLIC` so the include path resolves. We track
-its tip with `GIT_TAG main`, like the rest of the family. This is the library's
-only dependency.
+`url_parser.cc` has no dependencies of its own (it decodes hex through a local
+table). CMake still fetches the sibling
+[char-classify](https://github.com/Kronuz/char-classify) library and links it
+`PUBLIC`, for consumers that relied on its include path and because
+`test/urldecode_old.h` (the frozen original decoder, the oracle for
+`test/urldecode_diff.cc`) uses `chars::hexdec`.
 
 ## Standalone vs. Xapiand
 

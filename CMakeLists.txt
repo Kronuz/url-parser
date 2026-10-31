@@ -41,6 +41,22 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_link_libraries(url_parser_test PRIVATE url_parser)
   add_test(NAME url_parser COMMAND url_parser_test)
 
+  # Differential test against the frozen original urldecode. It #includes
+  # url_parser.cc to reach the private buffers, so it does not link the library.
+  add_executable(url_parser_diff test/urldecode_diff.cc)
+  target_include_directories(url_parser_diff PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_link_libraries(url_parser_diff PRIVATE char_classify::char_classify)
+  target_compile_features(url_parser_diff PRIVATE cxx_std_20)
+  add_test(NAME url_parser_diff COMMAND url_parser_diff)
+
+  # The same test with the portable SWAR scanner forced (the default scanner is NEON or SSE2).
+  add_executable(url_parser_diff_swar test/urldecode_diff.cc)
+  target_include_directories(url_parser_diff_swar PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_link_libraries(url_parser_diff_swar PRIVATE char_classify::char_classify)
+  target_compile_features(url_parser_diff_swar PRIVATE cxx_std_20)
+  target_compile_definitions(url_parser_diff_swar PRIVATE URL_PARSER_NO_SIMD=1)
+  add_test(NAME url_parser_diff_swar COMMAND url_parser_diff_swar)
+
   # libFuzzer target (Clang): cmake -DURL_PARSER_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
   option(URL_PARSER_FUZZ "Build the libFuzzer target" OFF)
   if(URL_PARSER_FUZZ)
@@ -50,6 +66,31 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     target_compile_features(url_parser_fuzz PRIVATE cxx_std_20)
     target_compile_options(url_parser_fuzz PRIVATE -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all)
     target_link_options(url_parser_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  endif()
+
+  # Benchmark vs the frozen original, a LUT decoder and ada::unicode::percent_decode:
+  #   cmake -B build -DURL_PARSER_BENCH=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build --target url_parser_bench
+  # ada is fetched only here; the library target never depends on it. -DURL_PARSER_BENCH_ADA=OFF skips it.
+  option(URL_PARSER_BENCH "Build the urldecode benchmark" OFF)
+  if(URL_PARSER_BENCH)
+    add_executable(url_parser_bench bench/bench_url.cc)
+    target_include_directories(url_parser_bench PRIVATE bench test)
+    target_link_libraries(url_parser_bench PRIVATE url_parser)
+    option(URL_PARSER_BENCH_ADA "Compare against ada percent_decode" ON)
+    if(URL_PARSER_BENCH_ADA)
+      FetchContent_Declare(ada GIT_REPOSITORY https://github.com/ada-url/ada.git
+                               GIT_TAG 3306b15d89939d0374338e61ed362fcc5380a991)
+      cmake_policy(SET CMP0169 OLD)  # populate ada's sources only, not its build
+      FetchContent_GetProperties(ada)
+      if(NOT ada_POPULATED)
+        FetchContent_Populate(ada)
+      endif()
+      add_library(ada_bench_obj OBJECT "${ada_SOURCE_DIR}/src/ada.cpp")
+      target_include_directories(ada_bench_obj PUBLIC "${ada_SOURCE_DIR}/include")
+      target_compile_features(ada_bench_obj PUBLIC cxx_std_20)
+      target_link_libraries(url_parser_bench PRIVATE ada_bench_obj)
+      target_compile_definitions(url_parser_bench PRIVATE HAVE_ADA=1)
+    endif()
   endif()
 
   # A runnable tour of the library (not a test): build & run ./build/url_parser_demo

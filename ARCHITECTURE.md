@@ -23,23 +23,28 @@ value buffer.
 
 ## urldecode
 
-`urldecode` walks the input once, writing into a buffer reserved to the input
-size. A `%` triggers `chars::hexdec` from the
-[char-classify](https://github.com/Kronuz/char-classify) sibling library, which
-reads the two hex digits and advances the cursor. The separator arguments
-(`plus`, `amp`, `colon`, `eq`) are what each escaped delimiter decodes to, and
-the `encoded` byte, when set, stands in for a decoded byte unless it is one of
-`{ , }`. That is the one external dependency, and the reason this library is not
-header-only.
+`urldecode` walks the input once. It scans 16 bytes at a time (NEON, SSE2, or a
+64-bit SWAR fallback) for the bytes that need work, `%` and `+` (plus `&`, `;`,
+`=` only when their substitutes differ from themselves). Each block is stored to
+the output as it is scanned and the output advances only past the clean bytes, so
+clean runs cost a vector load and store per 16 bytes, and input with nothing to
+decode is one bulk copy (about 26 GB/s at 4 KB, on par with `ada::unicode::percent_decode`).
+A `%` followed by two hex digits is decoded through a 256-entry nibble table; a
+`%` without two hex digits stays a literal `%`. The separator arguments
+(`plus`, `amp`, `colon`, `eq`) are what each delimiter decodes to, whether literal
+or produced by `%XX`, and the `encoded` byte, when set, stands in for a decoded
+byte unless it is one of `{ , }`. The output is sized to the input once (decoding
+never grows it) and shrunk at the end, written through a raw pointer.
 
-The two parsers lean on this twice. They call `urldecode` once with the
-delimiters mapped to control bytes (`\1` for `=`, `\0` for `&`, and so on), so
-the scan can switch on a single byte, and once normally to get the buffer whose
-substrings are returned to the caller.
+The two parsers need two decodings of the same bytes: once with the delimiters
+mapped to control bytes (`\1` for `=`, `\0` for `&`, and so on), so the scan can
+switch on a single byte, and once normally to get the buffer whose substrings are
+returned to the caller. Both strings have the same length and layout, so one pass
+(`urldecode2`) fills both.
 
 ## QueryParser
 
-`init()` decodes the query string both ways. `next(name)` then scans the
+`init()` decodes the query string both ways in one pass. `next(name)` then scans the
 delimiter-mapped buffer for a `name=` whose key matches, tracking the start of
 the current field and the position of its `=`. On a match it records the value's
 offset and length and returns `0`; if it reaches the end without a match it
@@ -90,4 +95,5 @@ comparing multibyte separators. Keeping a second, normally-decoded buffer in
 lockstep means values can be returned as `string_view`s with no extra copy. The
 backward-then-forward split on the path is what lets all the trailing pieces be
 optional without backtracking. `normalize_path` is inlined and the trace logging
-is gone, so the only thing left to link is the hex decoder in char-classify.
+is gone, and the hex table is local; the char-classify link is kept only so existing
+consumers keep their include path (the test oracle uses it).

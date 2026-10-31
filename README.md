@@ -80,6 +80,17 @@ of representative paths.
 - [ARCHITECTURE.md](ARCHITECTURE.md): the decoder and the two-pass path parser.
 - [AGENTS.md](AGENTS.md): repository map, invariants, and traps.
 
+## ⚡ Performance
+
+`urldecode` scans 16 bytes per step (NEON, SSE2, or SWAR) for `%` and `+`, copies
+clean blocks straight to the output, and decodes `%XX` through a nibble table.
+`QueryParser::init` and `PathParser::init` fill the delimiter-mapped and the plain
+buffer in the same pass. On Apple M-series (clang 17, `-O3`), 4 KB inputs: clean
+input 157 ns (26 GB/s; ada `percent_decode` 147 ns), a query with a few escapes and
+`+` 0.95 µs (the original 7.5 µs), 25% `%XX` 2.5 µs (the original 6.0 µs).
+`QueryParser::init` plus three lookups on a 4 KB query: 6.1 µs, down from 15.4 µs.
+Run `bench/bench_url.cc` (`-DURL_PARSER_BENCH=ON`) to reproduce.
+
 ## 🛠️ Building and testing
 
 ```sh
