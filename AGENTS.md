@@ -18,6 +18,8 @@ test/perf_guard.cc           Timing guards (CTest `url_parser_perf`): short inpu
 fuzz/fuzz_parse.cc           libFuzzer target (-DURL_PARSER_FUZZ=ON): urldecode with fuzzed substitutes against the reference decoder, and both parsers' buffers.
 fuzz/url.dict               libFuzzer dictionary of the bytes and sequences that matter (`url_parser_fuzz -dict=fuzz/url.dict`).
 bench/bench_url.cc           Benchmark vs the reference decoder, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON): urldecode from 4 bytes to 64 KB, QueryParser and PathParser.
+bench/sweep.cc, bench/sweep/ The same-run sweep over sizes of 4 to 4096 bytes beside the original library (4424e25), the one before the small-input work (9ce4c23) and an optional commit, each fetched and built under other names into one binary (cmake -DURL_PARSER_SWEEP=ON).
+tools/mutants.py             The 14 decoder, 5 scan and 9 normalize_path mutants of url_parser.cc, applied to a scratch copy, rebuilt and run against the suite; CTest `url_parser_mutants_anchors` keeps their anchors matching.
 test/test.cc                 Runnable smoke test: urldecode, QueryParser, PathParser, and the normalize_path collapsing.
 examples/demo.cc             A runnable tour (not a test).
 CMakeLists.txt               STATIC library `url_parser` (+ alias url_parser::url_parser); FetchContent char-classify; CTest test `url_parser`.
@@ -70,6 +72,15 @@ The method shared by the Kronuz libraries is in
   cmake --build build-asan && ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build-asan --output-on-failure
   ```
 
+- **Mutants.** `python3 tools/mutants.py` copies the repository to a scratch directory, applies
+  each mutant of `url_parser.cc`, rebuilds, runs the suite, and requires the kill and the test
+  that names it: `D1` to `D14` (the decoder) by `url_parser_spec`, `S1` to `S5` (the vector
+  scans of `QueryParser::next` and `PathParser::next`) by `url_parser_next_model`, `N1` to `N9`
+  (`normalize_path` and `plain_path`) by `url_parser_normalize`. Each is an exact-anchor
+  replacement that must match once, so a change to the code it breaks moves the anchor and
+  `url_parser_mutants_anchors` fails until the script follows. One build and one ctest run per
+  mutant (`--list`, `--only D1,S`, `--jobs N`, `--cmake-arg=-DCMAKE_CXX_COMPILER=clang++`); the
+  `mutants` workflow (`workflow_dispatch`) runs it on Linux and macOS.
 - **Fuzzing.** `cmake -B build-fuzz -DURL_PARSER_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++` (a clang
   with libFuzzer) builds `url_parser_fuzz` under ASan+UBSan, which checks `urldecode` with fuzzed
   substitutes and both parsers' buffers against the frozen decoder. No corpus is committed:
@@ -90,6 +101,24 @@ The method shared by the Kronuz libraries is in
   python3 ../cpp-libraries/tools/ab_compare.py run --rounds 7 --include "current #1" \
     build-base/url_parser_bench build-bench/url_parser_bench
   ```
+
+- **Sweep.** `bench_url.cc` times the entry points at the sizes the README shows; the sweep
+  (`bench/sweep.cc`) times `urldecode` (default and query substitution set), `QueryParser::init`
+  with three lookups and `PathParser::init` + `next` at 4 to 4096 bytes on clean, few-escape,
+  25%-escape, separator and query-like input, against the library as the tree has it (timed twice:
+  the A/A column) and the commits the CHANGELOG compares with: the original (`orig`, 4424e25, with
+  `test/urldecode_old.h` for `urldecode`), the one before the small-input work (`prev`, 9ce4c23),
+  and any other (`base`). The variants are fetched at configure time and built under other names
+  into one binary, interleaved round by round. CI builds it and runs a few rows once.
+
+  ```sh
+  cmake -B build-sweep -DCMAKE_BUILD_TYPE=Release -DURL_PARSER_SWEEP=ON [-DURL_PARSER_SWEEP_BASE=COMMIT]
+  cmake --build build-sweep --target url_parser_sweep
+  build-sweep/url_parser_sweep "" 9 0 1024 0 op     # filter rounds mixed nmax parts variants (o p b)
+  ```
+
+  Time on an otherwise idle machine, under a hold, and check that the binary is the platform's own
+  architecture first.
 
 ## Dependency
 

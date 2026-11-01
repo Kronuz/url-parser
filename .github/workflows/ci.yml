@@ -13,4 +13,4 @@ jobs:
   ci:
     uses: Kronuz/cpp-libraries/.github/workflows/cmake.yml@main
     with:
-      cmake_args: -DURL_PARSER_BENCH=ON -DURL_PARSER_BENCH_ADA=ON  # builds the benchmark with its comparators, which no test runs
+      cmake_args: -DURL_PARSER_BENCH=ON -DURL_PARSER_BENCH_ADA=ON -DURL_PARSER_SWEEP=ON  # builds the benchmark with its comparators and the sweep, which no test times

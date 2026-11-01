@@ -1,4 +1,10 @@
 build/
+build-*/
+/corpus/
+crash-*
+leak-*
+oom-*
+timeout-*
 *.o
 *.out
 test/test

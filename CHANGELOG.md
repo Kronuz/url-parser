@@ -78,19 +78,28 @@ library has no releases.
   with 14 special sequences at each position, lengths of 240 to 640 with a special at every step of
   the bulk copy, a long clean run between two specials, truncated escapes, random input and inputs
   of 4 KB to 1 MB, on exactly sized heap blocks followed by hex digits so that a read past an escape
-  changes the result. 14 mutants of the decoder are killed.
+  changes the result. 14 mutants of the decoder (`D1` to `D14` of `tools/mutants.py`) are killed.
 - `test/next_model.cc` (CTest `url_parser_next_model`): `QueryParser::next` and `PathParser::next`
-  against the byte loops they replace, which the test keeps; 5 mutants of the scan are killed.
+  against the byte loops they replace, which the test keeps; 5 mutants of the scan (`S1` to `S5` of
+  `tools/mutants.py`) are killed.
 - `url_parser_perf` guards that `QueryParser::next` crosses a 1 KB field at least 3x faster than
   a byte loop; with the three skips removed it measures 0.67x and fails on every CI platform.
 - `fuzz/url.dict`, the libFuzzer dictionary of the fuzz target.
+- `tools/mutants.py`: the 14 decoder and 5 scan mutants as exact-anchor replacements of
+  `url_parser.cc`, and 9 more of `normalize_path` (`N1` to `N9`, killed by `url_parser_normalize`).
+  Each is applied to a scratch copy, rebuilt and run against the suite; CTest
+  `url_parser_mutants_anchors` keeps the anchors matching, and the `mutants` workflow runs the script.
+- `bench/sweep.cc` and `bench/sweep/`: the same-run sweep of `urldecode`, `QueryParser` and
+  `PathParser`, beside the original library (4424e25), the previous decoder (9ce4c23) and an
+  optional commit, fetched by CMake and built under other names into one binary
+  (`-DURL_PARSER_SWEEP=ON`; CI builds it).
 - `bench/bench_url.cc` rows for the two inputs of this fix and the one of UP1: clean queries of
   128 B and 1 KB (`init` and three lookups), `PathParser::init` + `next` of 8 to 256 B, and 4 to 9 byte
   inputs with an escape. CI builds the benchmark with its comparators (`-DURL_PARSER_BENCH=ON`).
 
 ### Measured
 
-`bench/bench_url.cc` and the sweep of `urldecode`, `QueryParser` and `PathParser` over sizes of 4 to
+`bench/bench_url.cc` and the sweep (`bench/sweep.cc`) of `urldecode`, `QueryParser` and `PathParser` over sizes of 4 to
 1024 bytes and clean, few-escape, 25%-escape and separator inputs, `-O3`, on an otherwise idle machine, two rounds, the
 previous decoder (`9ce4c23`) built the same way beside it. The unit is the ratio of the previous
 decoder's time to this one's (above 1 is faster):
@@ -110,7 +119,7 @@ of 15 to 31 bytes; 11 rows under 0.97).
 
 ### Measured against the original decoder
 
-The rows above compare with the decoder of `9ce4c23`, the first rewrite. A same-run sweep of the public entry
+The rows above compare with the decoder of `9ce4c23`, the first rewrite. A same-run sweep (`bench/sweep.cc`, `url_parser_sweep "" 9 0 64 0 op`) of the public entry
 points over 4 to 64 bytes (187 rows: `urldecode` with the default and the query substitution set,
 `QueryParser::init` + 3 lookups, `PathParser::init` + `next`; clean, few-escape, 25%-escape, separator and
 query-like input), `-O3`, on an otherwise idle machine, nine interleaved rounds per row with the library timed twice (the

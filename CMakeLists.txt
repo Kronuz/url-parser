@@ -102,6 +102,13 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   add_test(NAME url_parser_perf COMMAND url_parser_perf)
   set_tests_properties(url_parser_perf PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
 
+  # tools/mutants.py: each mutant's anchor in url_parser.cc still occurs exactly once. Running the mutants
+  # (`python3 tools/mutants.py`) rebuilds the suite for each of them and is not a test.
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME url_parser_mutants_anchors COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/mutants.py --check)
+  endif()
+
   # libFuzzer target (Clang): cmake -DURL_PARSER_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
   option(URL_PARSER_FUZZ "Build the libFuzzer target" OFF)
   if(URL_PARSER_FUZZ)
@@ -136,6 +143,43 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
       target_link_libraries(url_parser_bench PRIVATE ada_bench_obj)
       target_compile_definitions(url_parser_bench PRIVATE HAVE_ADA=1)
     endif()
+  endif()
+
+  # The same-run sweep of urldecode, QueryParser and PathParser over sizes of 4 to 4096 bytes, beside the
+  # original library (4424e25) and the one before the small-input work (9ce4c23), and optionally another
+  # commit: cmake -B build -DURL_PARSER_SWEEP=ON [-DURL_PARSER_SWEEP_BASE=<commit>] -DCMAKE_BUILD_TYPE=Release
+  # The earlier commits are fetched here only and built into the one binary under other names
+  # (bench/sweep/*_api.h and *_impl.cc); the library target never depends on them.
+  option(URL_PARSER_SWEEP "Build the sweep against earlier commits" OFF)
+  set(URL_PARSER_SWEEP_BASE "" CACHE STRING "Another commit of this repository for the sweep to compare with")
+  if(URL_PARSER_SWEEP)
+    if(POLICY CMP0169)
+      cmake_policy(SET CMP0169 OLD)  # populate the sources only, not a build
+    endif()
+    # Fetches commit `commit` of this repository into <build>/sweep-src/<variant>.
+    function(url_parser_sweep_fetch variant commit)
+      FetchContent_Declare(sweep_${variant} GIT_REPOSITORY https://github.com/Kronuz/url-parser.git GIT_TAG ${commit}
+                           SOURCE_DIR "${CMAKE_BINARY_DIR}/sweep-src/${variant}")
+      FetchContent_GetProperties(sweep_${variant})
+      if(NOT sweep_${variant}_POPULATED)
+        FetchContent_Populate(sweep_${variant})
+      endif()
+    endfunction()
+    url_parser_sweep_fetch(orig 4424e25c53c54ae5697ddae2dd643885d921b4e2)
+    url_parser_sweep_fetch(prev 9ce4c230cb324470e0205d233c0ad088d29fc694)
+    set(sweep_sources bench/sweep.cc bench/sweep/orig_impl.cc bench/sweep/prev_impl.cc)
+    if(URL_PARSER_SWEEP_BASE)
+      url_parser_sweep_fetch(base ${URL_PARSER_SWEEP_BASE})
+      list(APPEND sweep_sources bench/sweep/base_impl.cc)
+    endif()
+    add_executable(url_parser_sweep ${sweep_sources})
+    target_include_directories(url_parser_sweep PRIVATE bench/sweep test "${CMAKE_BINARY_DIR}/sweep-src")
+    target_link_libraries(url_parser_sweep PRIVATE url_parser)
+    if(URL_PARSER_SWEEP_BASE)
+      target_compile_definitions(url_parser_sweep PRIVATE URL_PARSER_SWEEP_BASE_SET=1)
+    endif()
+    # The test runs a few rows once, so a build that cannot run the sweep fails; it times nothing.
+    add_test(NAME url_parser_sweep COMMAND url_parser_sweep "n=8 " 1 0 16 0 op)
   endif()
 
   # A runnable tour of the library (not a test): build & run ./build/url_parser_demo
