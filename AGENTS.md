@@ -11,8 +11,10 @@ easy to fall into.
 url_parser.h                 Declares urldecode() and the QueryParser / PathParser classes. Header. Verbatim from Xapiand.
 url_parser.cc                urldecode (SIMD-scanned, single pass), the two parsers, and the inlined normalize_path. Decoupled from Xapiand (see below).
 test/urldecode_diff.cc       Differential test (CTest `url_parser_diff`, `url_parser_diff_swar` with the SWAR scanner, and on x86-64 `url_parser_diff_noavx2` without the AVX2 skip) against the reference test/urldecode_old.h.
+test/urldecode_spec.cc       Specification test (CTest `url_parser_spec`): urldecode and both parsers' buffers against a decoder written from the documented semantics, not from the implementation: exhaustive short strings, every length to 200, long inputs with a special at each step of the bulk copy, random and 4 KB to 1 MB inputs.
 test/perf_guard.cc           Timing guards (CTest `url_parser_perf`): short input is no slower than the reference decoder, and the scan takes several vectors per step. Skipped in unoptimized and sanitized builds.
 fuzz/fuzz_parse.cc           libFuzzer target (-DURL_PARSER_FUZZ=ON): urldecode with fuzzed substitutes against the reference decoder, and both parsers' buffers.
+fuzz/url.dict               libFuzzer dictionary of the bytes and sequences that matter (`url_parser_fuzz -dict=fuzz/url.dict`).
 bench/bench_url.cc           Benchmark vs the reference decoder, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON).
 test/test.cc                 Runnable smoke test: urldecode, QueryParser, PathParser, and the normalize_path collapsing.
 examples/demo.cc             A runnable tour (not a test).

@@ -50,6 +50,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_compile_features(url_parser_diff PRIVATE cxx_std_20)
   add_test(NAME url_parser_diff COMMAND url_parser_diff)
 
+  # The decoder against a specification written from the documented semantics, independent of the
+  # reference above: exhaustive short strings, every length to 200, random and very large inputs.
+  add_executable(url_parser_spec test/urldecode_spec.cc)
+  target_include_directories(url_parser_spec PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(url_parser_spec PRIVATE char_classify::char_classify)
+  target_compile_features(url_parser_spec PRIVATE cxx_std_20)
+  add_test(NAME url_parser_spec COMMAND url_parser_spec)
+
   # The same test with the portable SWAR scanner forced (the default scanner is NEON or SSE2).
   add_executable(url_parser_diff_swar test/urldecode_diff.cc)
   target_include_directories(url_parser_diff_swar PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
