@@ -119,13 +119,14 @@ static void test_path_basic() {
 // ---------------------------------------------------------------------------
 
 static void test_path_normalize() {
-	// "a/../b" normalizes so the ".." is folded away: pth="a", id="b".
+	// "a/../b" normalizes to "b": the ".." removes "a" like any other component, so no path is left
+	// before the id: pth="", id="b".
 	{
 		PathParser pp;
 		pp.init("a/../b");
 		assert(sv(pp.get_id()) == "b");
 		pp.next();
-		assert(sv(pp.get_pth()) == "a");
+		assert(sv(pp.get_pth()).empty());
 	}
 
 	// A doubled slash "x//y" collapses to a single one: pth="x", id="y".
@@ -155,7 +156,7 @@ static void test_path_normalize() {
 		assert(sv(pp.get_pth()) == "foo");
 	}
 
-	std::printf("PathParser normalize OK: '..' folded, '//' collapsed, '.' dropped\n");
+	std::printf("PathParser normalize OK: '..' pops its component, '//' collapsed, '.' dropped\n");
 }
 
 

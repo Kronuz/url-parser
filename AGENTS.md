@@ -12,6 +12,7 @@ url_parser.h                 Declares urldecode() and the QueryParser / PathPars
 url_parser.cc                urldecode (SIMD-scanned, single pass), the two parsers, and the inlined normalize_path. Decoupled from Xapiand (see below).
 test/urldecode_diff.cc       Differential test (CTest `url_parser_diff`, `url_parser_diff_swar` with the SWAR scanner, and on x86-64 `url_parser_diff_noavx2` without the AVX2 skip) against the reference test/urldecode_old.h.
 test/urldecode_spec.cc       Specification test (CTest `url_parser_spec`): urldecode and both parsers' buffers against a decoder written from the documented semantics, not from the implementation: exhaustive short strings, every length to 200, random and 64 KB to 1 MB inputs.
+test/normalize_path_test.cc  CTest `url_parser_normalize`: normalize_path against its frozen previous loop and `std::filesystem::path::lexically_normal`: the empty and null path, the first component of a relative path, every string of `a`, `.`, `/` to 8 bytes.
 test/next_model.cc           CTest `url_parser_next_model`: QueryParser::next and PathParser::next against the byte loops they replace (kept in the test), on buffers with long fields and delimiters at every offset of the vector steps.
 test/perf_guard.cc           Timing guards (CTest `url_parser_perf`): short input is no slower than the reference decoder, the scan takes several vectors per step, and QueryParser::next crosses a long field with vectors. Skipped in unoptimized and sanitized builds.
 fuzz/fuzz_parse.cc           libFuzzer target (-DURL_PARSER_FUZZ=ON): urldecode with fuzzed substitutes against the reference decoder, and both parsers' buffers.
@@ -60,9 +61,10 @@ verbatim. `url_parser.cc` differs from upstream in three ways:
 
 - **`normalize_path` inlined.** Upstream includes `"fs.hh"` for the single call
   `normalize_path(p, false, true)` in `PathParser::init`. That function is pure
-  string manipulation (no filesystem access), so both overloads sit verbatim from
-  Xapiand's `src/fs.cc` in an anonymous namespace at the top of this file, and
-  there is no `"fs.hh"` include. Keep the copyright attribution comment on the
+  string manipulation (no filesystem access), so both overloads sit in an anonymous
+  namespace at the top of this file as the fs library's `fs.cc` has them (Xapiand's
+  `src/fs.cc` plus fs's fixes of the empty path, the null view and the first
+  component of a relative path), and there is no `"fs.hh"` include. Keep the copyright attribution comment on the
   copied helper.
 - **No trace logging.** Upstream includes `"log.h"`, defines `L_URL_PARSER`, and
   traces the parse path (including a `repr(path)` dump and two state-name-dumping
@@ -105,8 +107,15 @@ Keep any change reconcilable with upstream as a plain edit on top of those delta
 - **`normalize_path` runs before parsing.** `PathParser::init` calls
   `normalize_path(p, false, true)` first, so the parser only ever sees a path
   with `..` folded, `//` collapsed, and the trailing slash kept. The inlined copy
-  must stay byte-for-byte equivalent to upstream's `src/fs.cc`; it is pure string
-  work, so don't add any filesystem access to it.
+  must give the bytes of the fs library's (`github.com/Kronuz/fs`, `fs.cc`) for every input; it
+  is pure string work, so don't add any filesystem access to it. It differs from fs in two
+  ways, because fs's per-byte bookkeeping made `PathParser::init` of a short path 15% slower on the
+  M4: with `keep_slash` a path with no `.` and no `//` is copied (`plain_path`), and a run of
+  ordinary bytes is copied by an inner loop. `test/normalize_path_test.cc` holds fs's loop
+  verbatim, the previous loop frozen, and `std::filesystem::path::lexically_normal` as the
+  oracle for the one class of paths that changed (a `..` that pops the first component of a
+  relative path); when fs changes, change both copies and that test together. The contract is the
+  std::filesystem one, not RFC 3986's `remove_dot_segments`.
 
 - **Wide loads and stores are bounded by the bytes left.** `Scanner::find` loads 64 bytes
   only with 64 left and 16 with 16 left; `decode_core` handles a block from its mask only

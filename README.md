@@ -19,8 +19,8 @@ selector, and `:command`. For HTTP servers that route on structured paths.
   `get()`; bare flags have an empty value.
 - **`PathParser`**: the last segment is the id; `:command`, `{field,selector}`,
   and `path@host` are split off for you.
-- **Normalized first.** `//` collapses and `..` segments are dropped, so a path
-  cannot climb above its root.
+- **Normalized first.** `//` collapses and `..` removes the component before it,
+  so a path cannot climb above its root.
 
 ## 📦 Installation
 
@@ -71,7 +71,8 @@ of representative paths.
 
 - ✅ Routing HTTP requests on paths of the form `index/id:command`.
 - ❌ General URL parsing (schemes, authorities, ports, fragments) or RFC 3986
-  path resolution: `..` is dropped, not resolved.
+  path resolution: `..` is resolved as `std::filesystem::path::lexically_normal`
+  does, not as `remove_dot_segments`.
 
 ## 📚 Documentation
 

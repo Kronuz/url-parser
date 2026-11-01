@@ -108,12 +108,16 @@ all.
 ## normalize_path
 
 Before either pass, `init()` runs the path through `normalize_path`. This helper
-is copied from Xapiand's `src/fs.cc`. It lives among filesystem helpers there,
-but it touches nothing on disk: it is a single pass over the buffer that folds
-`..` segments, collapses repeated `/`, and trims (or, with `keep_slash`, keeps)
-a trailing slash. `url_parser` calls it as `normalize_path(p, false, true)`, so
-doubled slashes and `..`/`.` segments are gone before the parser ever looks at
-the string. Inlining it is the whole reason this library has no `fs` dependency.
+is copied from Xapiand's `src/fs.cc`, as the fs library has it. It lives among
+filesystem helpers there, but it touches nothing on disk: it is a single pass over
+the buffer that pops a component for each `..`, collapses repeated `/`, and trims (or,
+with `keep_slash`, keeps) a trailing slash. A `..` pops the first component of a
+relative path like any other (`a/..` is `.`, `a/../b` is `b`); the root and a leading
+`.` or `..` are never popped, so the result cannot climb above them. An empty path,
+and a default-constructed view, is empty. `url_parser` calls it as
+`normalize_path(p, false, true)`, so doubled slashes and `..`/`.` segments are gone
+before the parser ever looks at the string. Inlining it is the whole reason this
+library has no `fs` dependency.
 
 ## Why this shape
 

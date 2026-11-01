@@ -53,44 +53,110 @@
 #endif
 
 namespace {
-// normalize_path is copied verbatim from Xapiand's src/fs.cc (Copyright (c)
-// 2015-2019 Dubalu LLC, MIT). Despite living next to filesystem helpers there,
-// it is pure string manipulation: it collapses "..", "//", and trailing slashes
-// in a single pass over the buffer, touching nothing on disk. It is the only
-// thing url_parser needed from "fs.hh", so it is inlined here to keep this
-// library free of a filesystem dependency.
+// normalize_path is copied from Xapiand's src/fs.cc (Copyright (c)
+// 2015-2019 Dubalu LLC, MIT), as the fs library (github.com/Kronuz/fs) has it
+// since its fixes for the empty path, a null view and the first component of a
+// relative path. Despite living next to filesystem helpers there, it is pure
+// string manipulation: it collapses "..", "//", and trailing slashes in a single
+// pass over the buffer, touching nothing on disk. It is the only thing
+// url_parser needed from "fs.hh", so it is inlined here to keep this library
+// free of a filesystem dependency.
+
+// Whether [p, end) has no '.' and no "//": the loop of normalize_path then has nothing to fold. (fs's
+// loop does not have this fast path, nor the inner loop over a run of ordinary bytes: they give its bytes.)
+inline bool
+plain_path(const char* p, const char* end) noexcept
+{
+	char prev = '\0';
+	for (; p != end; ++p) {
+		const char c = *p;
+		if (c == '.' || (c == '/' && prev == '/')) { return false; }
+		prev = c;
+	}
+	return true;
+}
 
 URL_PARSER_ALIGN size_t
 normalize_path(const char* src, const char* end, char* dst, bool slashed, bool keep_slash)
 {
+	// With keep_slash (what PathParser asks for) a path with no '.' and no "//" comes out as it went in.
+	if (keep_slash && plain_path(src, end)) {
+		const size_t n = static_cast<size_t>(end - src);
+		if (n != 0) { std::memcpy(dst, src, n); }
+		return n;
+	}
 	int levels = 0;
 	char* ret = dst;
 	char ch = '\0';
-	const char* last = keep_slash ? end - 1 : end;
-	while (src <= last) {
-		ch = src == end ? '/' : *src;
-		++src;
+	const char* begin = src;
+	// The first component of the output so far is dots only (a leading "." or ".."), and is still open.
+	bool first_dots = true;
+	bool first_open = true;
+	// A ".." popped every component, so the path is "." unless something follows.
+	bool emptied = false;
+	// Visit every byte of [src, end), then the closing '/' of the last component unless keep_slash.
+	// An empty path has no last component, so it gets no closing '/' (that would name the root).
+	// There is no end - 1, so a default-constructed view (a null src) is the empty path.
+	bool closing = !keep_slash && src < end;
+	while (src < end || closing) {
+		bool from_input = true;
+		if (src < end) {
+			ch = *src++;
+		} else {
+			ch = '/';
+			closing = false;
+			from_input = false;
+		}
 		if (ch == '.' && (levels != 0 || dst == ret || *(dst - 1) == '/' )) {
 			*dst++ = ch;
 			++levels;
 		} else if (ch == '/') {
-			while (levels != 0 && dst > ret + 1) {
+			// A ".." pops back to the '/' before the component it removes. The root is never popped,
+			// nor the dots of a leading "." or ".."; the first component of a relative path is popped
+			// like any other, and nothing is left (the path is then "." or what follows).
+			const bool open = dst != ret;
+			char* const floor = open && (*ret == '/' || first_dots) ? ret + 1 : ret;
+			while (levels != 0 && dst > floor) {
 				if (*--dst == '/') {
 					--levels;
 				}
 			}
-			if (dst == ret || *(dst - 1) != '/') {
+			if (open && dst == ret) {
+				levels = 0;
+				emptied = true;
+				first_dots = true;
+				first_open = true;
+			} else if (dst == ret ? (from_input && src == begin + 1) : (*(dst - 1) != '/')) {
 				*dst++ = ch;
+				if (dst - ret > 1) {
+					first_open = false;
+				}
 			}
 		} else {
+			// A name, or dots inside one: copy it with the bytes that follow it up to the next '.' or '/'
+			// (each of those is handled exactly as this one is).
 			*dst++ = ch;
 			levels = 0;
+			bool name = ch != '.';
+			while (src < end && *src != '.' && *src != '/') {
+				*dst++ = *src++;
+				name = true;
+			}
+			ch = src[-1];
+			if (first_open && name) {
+				first_dots = false;
+			}
 		}
 	}
 	if (ch == '.' && levels == 1) {
 		ch = *--dst;
 	}
-	if (dst > ret + 1 && !keep_slash) {
+	if (dst == ret && emptied) {
+		*dst++ = '.';
+		if (slashed || (keep_slash && end[-1] == '/')) {
+			*dst++ = '/';
+		}
+	} else if (dst > ret + 1 && !keep_slash) {
 		if (slashed) {
 			if (ch != '/') {
 				*dst++ = '/';

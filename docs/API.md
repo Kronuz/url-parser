@@ -47,9 +47,13 @@ path (`State::PTH`) or, for a `path@host` segment, the host
 
 ## Caveats
 
-- `normalize_path` drops `..` segments instead of resolving them against the
-  parent, and collapses `//`: `a/../b` parses as path `a`, id `b`, and `x//y` as
-  path `x`, id `y`. This is not POSIX path resolution, and it means a request
-  path can never climb above its root.
+- `normalize_path` resolves `..` against the component before it, as
+  `std::filesystem::path::lexically_normal` does, and collapses `//`: `a/b/../c`
+  parses as path `a`, id `c`, `a/../b` as id `b` with no path, and `x//y` as path
+  `x`, id `y`. The root is never popped and a leading `..` is not resolved
+  (`/../a` is `/a`, `../a` is `./a`), so a request path can never climb above its
+  root or its start. An empty path, and a default-constructed `string_view`, stays
+  empty. This is not RFC 3986's `remove_dot_segments`, which is defined for
+  absolute paths and maps the relative `a/../b` to `/b`.
 - `QueryParser::get()` returns a view into the parser's decoded buffer, valid
   until the next `init()`.

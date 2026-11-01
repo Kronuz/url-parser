@@ -58,6 +58,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_compile_features(url_parser_spec PRIVATE cxx_std_20)
   add_test(NAME url_parser_spec COMMAND url_parser_spec)
 
+  # normalize_path (the helper PathParser::init runs first) against its frozen previous loop and
+  # std::filesystem::path::lexically_normal: the empty and null path, the first component of a relative path.
+  add_executable(url_parser_normalize test/normalize_path_test.cc)
+  target_include_directories(url_parser_normalize PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(url_parser_normalize PRIVATE char_classify::char_classify)
+  target_compile_features(url_parser_normalize PRIVATE cxx_std_20)
+  add_test(NAME url_parser_normalize COMMAND url_parser_normalize)
+
   # QueryParser::next and PathParser::next against the byte loops they replace, on buffers with
   # long fields and delimiters at every offset of the vector steps.
   add_executable(url_parser_next_model test/next_model.cc)

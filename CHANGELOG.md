@@ -27,8 +27,29 @@ library has no releases.
   path of 64 bytes or more 16 bytes at a time (`find_byte3`), which takes those rows out of the
   lottery: on the M4 the same effect moved a clean 1 KB query by up to 1.7x.
 
+- `normalize_path`, the helper `PathParser::init` runs first, has the fs library's fixes. A `..`
+  popped every component but the first of a relative path, so `a/..` was `a` and `a/../b` was
+  `a/b` (parsed as path `a`, id `b`, which the docs gave as the rule); it now pops it like any
+  other, as `std::filesystem::path::lexically_normal` does: `a/..` is `.`, `a/../b` is `b` (no path,
+  id `b`). The root and a leading `.` or `..` are still never popped (`/../a` is `/a`, `../a` is
+  `./a`), so a path cannot climb above its root or its start; RFC 3986's `remove_dot_segments` is not
+  the contract (it maps the relative `a/../b` to `/b`). `PathParser::init(std::string_view())`
+  crashed: the loop bound was `end - 1`, which for a null data pointer wrapped around and read from
+  address 1 (UBSan reports the null arithmetic for every input); a null view is the empty path now. An empty
+  path stays empty for all four flag combinations (without `keep_slash` the loop returned `/`; the
+  parser passes `keep_slash`, where it was already empty). Every other input gives the bytes it gave:
+  `test/normalize_path_test.cc` compares the frozen loop and the new one over every string of `a`,
+  `.` and `/` up to 8 bytes, 30,000 random ones and 20,000 of up to 60 bytes over a wider alphabet,
+  in all four flag combinations, and the new one with fs's loop on all of them. fs's loop keeps more state per byte, which made `PathParser::init` +
+  `next` of an 8-byte path 0.96x to 0.83x of the previous decoder on the M4; this copy copies a path
+  with no `.` and no `//` when `keep_slash` is set, and a run of ordinary bytes in an inner loop
+  otherwise, and gives fs's bytes.
+
 ### Added
 
+- `test/normalize_path_test.cc` (CTest `url_parser_normalize`): the above, with the frozen loop and
+  `lexically_normal` as oracles, a child process for the null view, and the parser's results for
+  `a/../b`, `a/b/../c`, `/a/../b`, `a/..`, `a/../` and the empty path.
 - `test/urldecode_spec.cc` (CTest `url_parser_spec`): `urldecode` and both parsers' buffers
   against a decoder written from the documented semantics, not from the implementation or the
   reference of `urldecode_diff`: every string to 5 bytes over a 12-byte alphabet, every length to 200
@@ -55,19 +76,19 @@ decoder's time to this one's (above 1 is faster):
 | Row | M4 Pro | i9 |
 |---|---:|---:|
 | `QueryParser::init` + 3 lookups, 128 B clean | 4.8 | 4.4 |
-| `QueryParser::init` + 3 lookups, 1 KB clean | 14.4 | 13.1 |
-| `PathParser::init` + `next`, 8 / 16 / 32 B | 0.96 / 0.98 / 0.99 | 1.00 / 1.01 / 1.00 |
-| `PathParser::init` + `next`, 64 B | 1.63 | 1.31 |
-| `PathParser::init` + `next`, 256 B | 1.90 | 1.41 |
+| `QueryParser::init` + 3 lookups, 1 KB clean | 14.4 | 13.0 |
+| `PathParser::init` + `next`, 8 / 16 / 32 B | 0.91 / 0.97 / 0.96 | 0.97 / 1.02 / 1.00 |
+| `PathParser::init` + `next`, 64 B | 1.69 | 1.35 |
+| `PathParser::init` + `next`, 256 B | 1.99 | 1.57 |
 
-The repo bench (56 rows): the slowest row is 0.91x on the M4 (16 bytes, 25% escapes) and 0.97x on
-the i9. The sweep (137 rows): 0.81x on the M4 (`urldecode` with the query set, 16 bytes, 25% escapes;
-30 rows below 0.97, all of 4 to 33 bytes) and 0.93x on the i9 (`QueryParser::init` + 3 lookups of 15 to
-33 bytes; 14 rows below 0.97).
+The repo bench (56 rows): the slowest row is 0.86x on the M4 (the 8-byte path; 7 rows under 0.97) and
+0.97x on the i9. The sweep (137 rows): 0.79x on the M4 (`urldecode` with the query set, 16 bytes, 25%
+escapes; 31 rows under 0.97, all of 4 to 33 bytes) and 0.94x on the i9 (`QueryParser::init` + 3 lookups
+of 15 to 31 bytes; 11 rows under 0.97).
 
 ### Known problems
 
-- The 16 to 33 byte rows above stay under 0.97x on the M4 and for `QueryParser` on the i9. On the
+- The 8 to 33 byte rows above stay under 0.97x on the M4 and for `QueryParser` on the i9. On the
   M4 the small paths of `urldecode` keep a 16-byte buffer on the stack, and the stack protector's
   canary costs about 2.5 ns per call, which is the whole difference (removing it, with
   `no_stack_protector`, gave 0.84x to 1.1x on the 16-byte row and moved `QueryParser` in the same binary by
