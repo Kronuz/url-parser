@@ -44,6 +44,53 @@ The test target is `url_parser_test`; the registered CTest name is `url_parser`.
 The test and demo are only added when this repo is the top-level project
 (CMakeLists.txt), so consumers vendoring it via `FetchContent` won't build them.
 
+## Verification and benchmarks
+
+The method shared by the Kronuz libraries is in
+[docs/PERFORMANCE.md](https://github.com/Kronuz/cpp-libraries/blob/main/docs/PERFORMANCE.md).
+
+- **Tests.** `ctest` runs `url_parser`, `url_parser_diff`, `url_parser_diff_swar`
+  (`URL_PARSER_NO_SIMD`), `url_parser_diff_noavx2` (x86-64 only), `url_parser_spec`,
+  `url_parser_normalize`, `url_parser_next_model` and the timing guard `url_parser_perf`, which
+  reports skipped unless the build is optimized and unsanitized (`-DCMAKE_BUILD_TYPE=Release`).
+- **Differential and oracles.** `url_parser_diff` compares `urldecode` and both parsers with the
+  frozen byte-at-a-time decoder in `test/urldecode_old.h` (never edited). Beside it,
+  `url_parser_spec` checks against a decoder written from the documented semantics,
+  `url_parser_normalize` against a table of Python's `os.path.normpath` output, a model and fs's
+  loop, and `url_parser_next_model` against the byte loops the scans replace.
+- **Sanitizers.** CI (`.github/workflows/ci.yml`, which calls the shared
+  [cmake.yml](https://github.com/Kronuz/cpp-libraries/blob/main/.github/workflows/cmake.yml))
+  runs every test under ASan+UBSan and under TSan, clang on Linux, and builds the benchmark with
+  ada. The tests put inputs in exactly-sized heap blocks, so ASan sees any over-read:
+
+  ```sh
+  CC=clang CXX=clang++ cmake -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS" \
+    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+  cmake --build build-asan && ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build-asan --output-on-failure
+  ```
+
+- **Fuzzing.** `cmake -B build-fuzz -DURL_PARSER_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++` (a clang
+  with libFuzzer) builds `url_parser_fuzz` under ASan+UBSan, which checks `urldecode` with fuzzed
+  substitutes and both parsers' buffers against the frozen decoder. No corpus is committed:
+  `./build-fuzz/url_parser_fuzz -dict=fuzz/url.dict corpus/`.
+- **Benchmark.** `-DURL_PARSER_BENCH=ON` builds `url_parser_bench` (`bench/bench_url.cc`): each
+  row timed twice (`current #1`, `current #2 (A/A)`) beside the frozen decoder, a LUT decoder and
+  ada's `percent_decode`, each checked against `urldecode` before it is timed. ada is fetched at a
+  pinned commit for this target alone (`-DURL_PARSER_BENCH_ADA=OFF` skips it). Numbers: the
+  README's Performance section and `CHANGELOG.md`. To compare two commits, build the bench at
+  each and run both with `tools/ab_compare.py` from a clone of
+  [cpp-libraries](https://github.com/Kronuz/cpp-libraries) beside this one; it runs A, B and A
+  again (the A/A control) every round:
+
+  ```sh
+  git worktree add ../url-parser-base BASE_COMMIT
+  cmake -S ../url-parser-base -B build-base -DCMAKE_BUILD_TYPE=Release -DURL_PARSER_BENCH=ON && cmake --build build-base --target url_parser_bench
+  cmake -B build-bench -DCMAKE_BUILD_TYPE=Release -DURL_PARSER_BENCH=ON && cmake --build build-bench --target url_parser_bench
+  python3 ../cpp-libraries/tools/ab_compare.py run --rounds 7 --include "current #1" \
+    build-base/url_parser_bench build-bench/url_parser_bench
+  ```
+
 ## Dependency
 
 `url_parser.cc` has no dependencies of its own (it decodes hex through a local
