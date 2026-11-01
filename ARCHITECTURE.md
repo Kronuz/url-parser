@@ -23,18 +23,39 @@ value buffer.
 
 ## urldecode
 
-`urldecode` walks the input once. It scans 16 bytes at a time (NEON, SSE2, or a
-64-bit SWAR fallback) for the bytes that need work, `%` and `+` (plus `&`, `;`,
-`=` only when their substitutes differ from themselves). Each block is stored to
-the output as it is scanned and the output advances only past the clean bytes, so
-clean runs cost a vector load and store per 16 bytes, and input with nothing to
-decode is one bulk copy (about 26 GB/s at 4 KB, on par with `ada::unicode::percent_decode`).
-A `%` followed by two hex digits is decoded through a 256-entry nibble table; a
-`%` without two hex digits stays a literal `%`. The separator arguments
-(`plus`, `amp`, `colon`, `eq`) are what each delimiter decodes to, whether literal
-or produced by `%XX`, and the `encoded` byte, when set, stands in for a decoded
-byte unless it is one of `{ , }`. The output is sized to the input once (decoding
-never grows it) and shrunk at the end, written through a raw pointer.
+`urldecode` walks the input once. A scanner looks for the bytes that need work: `%` and
+`+`, plus `&`, `;`, `=` only when their substitutes differ from themselves (a set of two or
+five needles, chosen per call). The scan is NEON or SSE2 (16 bytes per vector, 64 per step
+in `find`) or, without either, a 64-bit SWAR test (8 bytes per step). On NEON the needles
+sit in a 16- or 32-entry table and a byte is a needle when the table lookup of
+`byte - lowest needle` is set, two instructions per vector; on SSE2 two needles take an or and
+a compare per vector (a filter that also flags a few other bytes, then an exact test) and
+five take five compares. On x86-64 with GCC or clang, a clean stretch of 256 bytes or more is
+first skipped 128 bytes per step with AVX2 (`skip_clean_avx2`, used when `has_avx2()` finds
+the CPU supports it); the skip only moves over steps that cannot hold a needle, and the SSE2
+code then locates the first needle exactly.
+
+Input with nothing to decode is one copy, made after the scan (no zero-fill). Otherwise
+the clean prefix is copied and `decode_core` takes over. It tests one 16-byte block, turns the
+result into a bit mask, and handles each special byte of the block from its bit: the clean run
+before it is stored 16 bytes at a time (a run is shorter than a block), and a `%` followed by
+two hex digits is decoded through a 256-entry nibble table and consumes them. The two digits
+are never needles, so the rest of the block's mask stays valid; a `%` without two hex digits
+stays literal. A block with no special byte is one load and one store. Fewer than 32 bytes left go
+through a loop that finds the first special byte of the next block with one vector test (the
+last bytes, fewer than a block, through a byte loop). Every wide load
+and store is guarded by the bytes left, and the output never outruns the input, so the
+over-copy fits the buffer. The separator arguments (`plus`, `amp`, `colon`, `eq`) are what
+each delimiter decodes to, whether literal or produced by `%XX`, and the `encoded` byte, when
+set, stands in for a decoded byte unless it is one of `{ , }`.
+
+The result is built once. An input shorter than a block is scanned first (on x86-64 two 8-byte words
+from 8 bytes up, a byte loop below and on arm64) and, when it is clean, copied in one piece; otherwise the clean
+prefix and the decoded rest go through a block-sized stack buffer into a string of the exact size.
+Larger inputs with something to decode are decoded into a 512-byte stack buffer up to 512 bytes
+(from 17 bytes on x86-64, from 48 on arm64, below which the in-place decode is faster there) and
+into a string sized to the input and shrunk at the end above that. On x86-64 the mask pass handles
+the first 4 KB of a call and the block loop the rest.
 
 The two parsers need two decodings of the same bytes: once with the delimiters
 mapped to control bytes (`\1` for `=`, `\0` for `&`, and so on), so the scan can

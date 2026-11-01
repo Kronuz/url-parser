@@ -83,19 +83,25 @@ of representative paths.
 
 ## ⚡ Performance
 
-`urldecode` scans 16 bytes per step (NEON, SSE2, or SWAR) for `%` and `+`, copies
-clean blocks straight to the output, and decodes `%XX` through a nibble table.
-`QueryParser::init` and `PathParser::init` fill the delimiter-mapped and the plain
-buffer in the same pass.
+`urldecode` looks for `%` and `+` (and `&`, `;`, `=` when their substitutes differ) 64
+bytes per step with NEON or SSE2, 128 per step over a long clean stretch with AVX2 (chosen
+at run time on x86-64), and 8 per step with the portable SWAR scanner. Input
+with nothing to decode is one copy. Otherwise each 16-byte block is tested once and its
+special bytes are decoded from the block's bit mask, with clean runs stored 16 bytes at a
+time, and `%XX` goes through a nibble table. Short input is decoded into a stack buffer and
+the string is built once. `QueryParser::init` and `PathParser::init` fill both
+buffers in the same pass.
 
-On Apple M-series (clang 17, `-O3`), 4 KB inputs:
+Median time per call, 4 KB inputs (`bench/bench_url.cc`, `-O3`, `quiet strict`):
 
-| Input | Time |
-|---|---:|
-| Clean, nothing to decode | 157 ns (26 GB/s; ada `percent_decode` 147 ns) |
-| Query with a few escapes and `+` | 0.95 µs |
-| 25% `%XX` | 2.5 µs |
-| `QueryParser::init` plus three lookups | 6.1 µs |
+| Input | Apple M4 Pro (clang 17) | Intel i9-9980HK (Apple clang 17) |
+|---|---:|---:|
+| Clean, nothing to decode | 108 ns | 139 ns |
+| Query with a few escapes and `+` | 466 ns | 920 ns |
+| 25% `%XX` | 1.08 µs | 2.07 µs |
+| `QueryParser::init` plus three lookups | 3.03 µs | 6.04 µs |
+
+`ada::unicode::percent_decode` on the same clean input takes 151 ns on the M4 Pro and 135 ns on the i9.
 
 Reproduce with:
 
