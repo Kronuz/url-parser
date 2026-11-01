@@ -4,6 +4,77 @@ Notable changes to url-parser, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); entries are dated because the
 library has no releases.
 
+## 2026-11-01
+
+### Fixed
+
+- Clean input is no slower than before the mask pass. The mask pass costs about a quarter more
+  than the block loop on a clean 16-byte block (two loop conditions and a spilled bound per
+  block), which made the decode of a clean query of 128 bytes to 1 KB (`urldecode2`, the part of
+  `QueryParser::init` this changes) 0.75-0.78x of the previous decoder on the Apple M4 Pro and
+  0.77-0.85x on the Intel i9-9980HK. `decode_core`
+  now runs the block loop alone on clean input and the mask pass from the first byte to decode
+  (at once for the string decoders, which start at one), and a clean stretch of 256 bytes or more
+  is copied 64 bytes per step (128 with AVX2) by `copy_clean_run`, after four clean blocks in the
+  mask pass so that input with a byte to decode every few dozen bytes never pays for the call.
+  Under 32 bytes the block loop is expanded where it is called, as it was before the mask pass.
+- `PathParser::init` + `next` was 8-20% slower than the previous decoder on the i9 for paths of 8 to
+  256 bytes, with no change to the parser: the loops of `PathParser::next`, `QueryParser::next` and
+  `normalize_path` run 5 to 20% faster or slower depending on where the code before them leaves
+  them (the same source measured 0.81x in one binary and 1.0x in another), and a change to the
+  decoder moved them. On x86-64 these functions, `decode_core` and `urldecode2` start on a 32-byte
+  boundary (`URL_PARSER_ALIGN`), and `QueryParser::next` and `PathParser::next` cross a field or
+  path of 64 bytes or more 16 bytes at a time (`find_byte3`), which takes those rows out of the
+  lottery: on the M4 the same effect moved a clean 1 KB query by up to 1.7x.
+
+### Added
+
+- `test/urldecode_spec.cc` (CTest `url_parser_spec`): `urldecode` and both parsers' buffers
+  against a decoder written from the documented semantics, not from the implementation or the
+  reference of `urldecode_diff`: every string to 5 bytes over a 12-byte alphabet, every length to 200
+  with 14 special sequences at each position, lengths of 240 to 640 with a special at every step of
+  the bulk copy, a long clean run between two specials, truncated escapes, random input and inputs
+  of 4 KB to 1 MB, on exactly sized heap blocks followed by hex digits so that a read past an escape
+  changes the result. 14 mutants of the decoder are killed.
+- `test/next_model.cc` (CTest `url_parser_next_model`): `QueryParser::next` and `PathParser::next`
+  against the byte loops they replace, which the test keeps; 5 mutants of the scan are killed.
+- `url_parser_perf` guards that `QueryParser::next` crosses a 1 KB field at least 3x faster than
+  a byte loop; with the three skips removed it measures 0.67x and fails on every CI platform.
+- `fuzz/url.dict`, the libFuzzer dictionary of the fuzz target.
+- `bench/bench_url.cc` rows for the two inputs of this fix and the one of UP1: clean queries of
+  128 B and 1 KB (`init` and three lookups), `PathParser::init` + `next` of 8 to 256 B, and 4 to 9 byte
+  inputs with an escape. CI builds the benchmark with its comparators (`-DURL_PARSER_BENCH=ON`).
+
+### Measured
+
+`bench/bench_url.cc` and the sweep of `urldecode`, `QueryParser` and `PathParser` over sizes of 4 to
+1024 bytes and clean, few-escape, 25%-escape and separator inputs, `-O3`, `quiet strict`, two rounds, the
+previous decoder (`9ce4c23`) built the same way beside it. The unit is the ratio of the previous
+decoder's time to this one's (above 1 is faster):
+
+| Row | M4 Pro | i9 |
+|---|---:|---:|
+| `QueryParser::init` + 3 lookups, 128 B clean | 4.8 | 4.4 |
+| `QueryParser::init` + 3 lookups, 1 KB clean | 14.4 | 13.1 |
+| `PathParser::init` + `next`, 8 / 16 / 32 B | 0.96 / 0.98 / 0.99 | 1.00 / 1.01 / 1.00 |
+| `PathParser::init` + `next`, 64 B | 1.63 | 1.31 |
+| `PathParser::init` + `next`, 256 B | 1.90 | 1.41 |
+
+The repo bench (56 rows): the slowest row is 0.91x on the M4 (16 bytes, 25% escapes) and 0.97x on
+the i9. The sweep (137 rows): 0.81x on the M4 (`urldecode` with the query set, 16 bytes, 25% escapes;
+30 rows below 0.97, all of 4 to 33 bytes) and 0.93x on the i9 (`QueryParser::init` + 3 lookups of 15 to
+33 bytes; 14 rows below 0.97).
+
+### Known problems
+
+- The 16 to 33 byte rows above stay under 0.97x on the M4 and for `QueryParser` on the i9. On the
+  M4 the small paths of `urldecode` keep a 16-byte buffer on the stack, and the stack protector's
+  canary costs about 2.5 ns per call, which is the whole difference (removing it, with
+  `no_stack_protector`, gave 0.84x to 1.1x on the 16-byte row and moved `QueryParser` in the same binary by
+  1.7x, so it is not done). Rows of this size move by 5 to 10% between two builds of the same code.
+- The earlier entry's "no row more than 3% slower" held for the binary it was measured in; the
+  table above is the check for the layouts of `bench_url.cc` and of the sweep.
+
 ## 2026-10-31
 
 ### Fixed

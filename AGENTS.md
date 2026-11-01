@@ -11,12 +11,12 @@ easy to fall into.
 url_parser.h                 Declares urldecode() and the QueryParser / PathParser classes. Header. Verbatim from Xapiand.
 url_parser.cc                urldecode (SIMD-scanned, single pass), the two parsers, and the inlined normalize_path. Decoupled from Xapiand (see below).
 test/urldecode_diff.cc       Differential test (CTest `url_parser_diff`, `url_parser_diff_swar` with the SWAR scanner, and on x86-64 `url_parser_diff_noavx2` without the AVX2 skip) against the reference test/urldecode_old.h.
-test/urldecode_spec.cc       Specification test (CTest `url_parser_spec`): urldecode and both parsers' buffers against a decoder written from the documented semantics, not from the implementation: exhaustive short strings, every length to 200, long inputs with a special at each step of the bulk copy, random and 4 KB to 1 MB inputs.
+test/urldecode_spec.cc       Specification test (CTest `url_parser_spec`): urldecode and both parsers' buffers against a decoder written from the documented semantics, not from the implementation: exhaustive short strings, every length to 200, random and 64 KB to 1 MB inputs.
 test/next_model.cc           CTest `url_parser_next_model`: QueryParser::next and PathParser::next against the byte loops they replace (kept in the test), on buffers with long fields and delimiters at every offset of the vector steps.
-test/perf_guard.cc           Timing guards (CTest `url_parser_perf`): short input is no slower than the reference decoder, and the scan takes several vectors per step. Skipped in unoptimized and sanitized builds.
+test/perf_guard.cc           Timing guards (CTest `url_parser_perf`): short input is no slower than the reference decoder, the scan takes several vectors per step, and QueryParser::next crosses a long field with vectors. Skipped in unoptimized and sanitized builds.
 fuzz/fuzz_parse.cc           libFuzzer target (-DURL_PARSER_FUZZ=ON): urldecode with fuzzed substitutes against the reference decoder, and both parsers' buffers.
 fuzz/url.dict               libFuzzer dictionary of the bytes and sequences that matter (`url_parser_fuzz -dict=fuzz/url.dict`).
-bench/bench_url.cc           Benchmark vs the reference decoder, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON): urldecode from 4 bytes to 64 KB, QueryParser and PathParser (CI builds it).
+bench/bench_url.cc           Benchmark vs the reference decoder, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON): urldecode from 4 bytes to 64 KB, QueryParser and PathParser.
 test/test.cc                 Runnable smoke test: urldecode, QueryParser, PathParser, and the normalize_path collapsing.
 examples/demo.cc             A runnable tour (not a test).
 CMakeLists.txt               STATIC library `url_parser` (+ alias url_parser::url_parser); FetchContent char-classify; CTest test `url_parser`.
@@ -124,13 +124,32 @@ Keep any change reconcilable with upstream as a plain edit on top of those delta
   merge them. `decode_core` is `noinline` under GCC only (inlined into `QueryParser::init` it slows GCC
   by a quarter, and it slows Apple clang when forced out), and on x86-64 its mask pass takes the first
   4 KB of a call (`mask_limit`).
-- **The AVX2 skip only skips.** `skip_clean_avx2` moves over 128-byte steps whose filter finds
-  no candidate and stops at the first step with one; the SSE2 code then locates the needle exactly.
+- **The block loop is the clean-input path; keep it as it is.** The two-buffer decoder runs it
+  until the first byte to decode and only then the mask pass: the mask pass costs about a quarter
+  more than the block loop on a clean block (two loop conditions and a spilled bound per
+  16 bytes, measured on the i9 and the M4), which showed as 0.8x on clean 128 B to 1 KB
+  queries. Long clean stretches go through `copy_clean_run`, which stays out of line: a
+  64-byte group written inline in the block loop made clean 16 to 128 byte inputs 10 to 20%
+  slower on the i9 (Apple clang), and an 8-byte word step for the last 8 to 15 bytes made a
+  128-byte one twice as slow on an M1 Pro, because each changed what the compiler did with the
+  loop. Time a change to this loop on 8 B to 1 KB clean inputs on both chips before keeping it.
+- **The AVX2 skip only skips.** `skip_clean_avx2` (the scan) and `copy_clean_avx2` (the bulk copy of
+  clean runs) move over 128-byte steps whose filter finds no candidate and stop at the first step
+  with one; the SSE2 code then locates the needle exactly.
   The two-needle filter is a superset test (`(byte | (a ^ b)) == (a | b)`), so it may flag a
   byte that is not a needle but never misses one; do not make it the final answer. A function
   with `target("avx2")` cannot be reached from code compiled without it except through the
   `has_avx2()` check, and nothing inside it may be a lambda (it would not get the target). The
   default build and `url_parser_diff_noavx2` both run the differential test.
+- **The byte loops of the parsers are alignment-sensitive, so they start aligned.** The loops of
+  `PathParser::init` and `next`, `QueryParser::next` and `normalize_path` ran 5 to 20% slower or
+  faster on the i9 depending on what came before them in the object (a change to the decoder moved
+  `PathParser::init+next` of a 256-byte path from 0.72 to 0.87 us, with no edit to the parser). On
+  x86-64 these functions, `decode_core` and `urldecode2` are `URL_PARSER_ALIGN` (32 bytes), which makes
+  the result the same in every binary; on the M4 the same lottery moved `QueryParser` by up to 1.7x,
+  and the long-field skip in `next` (`find_byte3`) is what takes the loop out of it. Compare any
+  edit with the start in at least two binaries (the repo bench and a second main) before believing a
+  3% row.
 - **The mask pass relies on the needles and the hex digits being disjoint.** A decoded
   escape consumes its two digits, and the rest of the block's mask is still right only
   because no needle is a hex digit. Adding a needle (`a`-`f`, `A`-`F`, `0`-`9`) breaks it.

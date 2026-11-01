@@ -1,10 +1,12 @@
-// Timing guards for two measured properties of urldecode, so a change that loses them fails a
+// Timing guards for measured properties of urldecode and QueryParser, so a change that loses them fails a
 // test rather than a benchmark nobody runs:
 //   1. Short input (4 to 16 bytes, with escapes) costs no more than the byte-at-a-time
 //      reference decoder: the scanner's set-up and the string's own resize calls used to cost
 //      more than the decoding.
 //   2. The scan for the first byte to decode takes several vectors per step: it is faster than
 //      the one-vector loop built from the same per-vector test.
+//   3. QueryParser::next crosses a long field with vectors: it is several times faster than the
+//      byte loop that visits every byte of it.
 // Each side is timed in alternating rounds and the best round of each is compared, so load
 // on the machine inflates both and the ratio stays; a failing ratio is measured again before
 // it is reported. Skipped (exit status 77) where timing means nothing: unoptimized builds
@@ -26,8 +28,12 @@
 #include <string>
 #include <vector>
 
-// Compiled together with the implementation to reach the scanner.
+// Compiled together with the implementation to reach the scanner and the parsers' buffers.
+#define private public
+#define class struct  // the parsers are classes with default-private buffers
 #include "../url_parser.cc"
+#undef class
+#undef private
 #include "urldecode_old.h"
 
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || !defined(__OPTIMIZE__)
@@ -105,6 +111,30 @@ int main() {
 		}
 		std::printf("scan: one vector per step / several = %.2f (floor 1.30)\n", ratio);
 		if (ratio < 1.30) { std::fprintf(stderr, "FAIL: the scan is not faster than one vector per step\n"); ok = false; }
+	}
+
+	// 3. QueryParser::next crosses a long field with vectors, not a byte at a time.
+	if (Scanner<2>::W == 16) {
+		std::string clean(1024, 'x');
+		for (size_t i = 0; i < clean.size(); ++i) { clean[i] = char('a' + i % 26); }
+		QueryParser qp;
+		qp.init(clean);
+		const char* base = qp.query.data();
+		const char* limit = base + qp.query.size();
+		auto bytewise = [&] {
+			const char* q = base;
+			while (q != limit && *q != '\0' && *q != '\1') { ++q; }
+			return q;
+		};
+		double ratio = 0;
+		for (int attempt = 0; attempt < 3; ++attempt) {
+			double a, b;
+			best_of([&] { qp.rewind(); int r = qp.next("nokey"); use(r); }, [&] { const char* r = bytewise(); use(r); }, 25, 4000, a, b);
+			ratio = b / a;
+			if (ratio >= 3.0) { break; }
+		}
+		std::printf("next on a 1 KB field: byte loop / next = %.2f (floor 3.0)\n", ratio);
+		if (ratio < 3.0) { std::fprintf(stderr, "FAIL: QueryParser::next does not skip a long field with vectors\n"); ok = false; }
 	}
 
 	std::printf(ok ? "url_parser perf guard OK\n" : "url_parser perf guard FAILED\n");

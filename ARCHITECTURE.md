@@ -36,16 +36,21 @@ the CPU supports it); the skip only moves over steps that cannot hold a needle, 
 code then locates the first needle exactly.
 
 Input with nothing to decode is one copy, made after the scan (no zero-fill). Otherwise
-the clean prefix is copied and `decode_core` takes over. It tests one 16-byte block, turns the
-result into a bit mask, and handles each special byte of the block from its bit: the clean run
-before it is stored 16 bytes at a time (a run is shorter than a block), and a `%` followed by
-two hex digits is decoded through a 256-entry nibble table and consumes them. The two digits
-are never needles, so the rest of the block's mask stays valid; a `%` without two hex digits
-stays literal. A block with no special byte is one load and one store. Fewer than 32 bytes left go
-through a loop that finds the first special byte of the next block with one vector test (the
-last bytes, fewer than a block, through a byte loop). Every wide load
-and store is guarded by the bytes left, and the output never outruns the input, so the
-over-copy fits the buffer. The separator arguments (`plus`, `amp`, `colon`, `eq`) are what
+the clean prefix is copied and `decode_core` takes over. `decode_core` has two loops. The block
+loop tests one 16-byte block for a needle, stores the block, and moves on when it holds none:
+on clean input it is the whole of the work. The mask pass turns the test of a block into a bit
+mask and handles each special byte of the block from its bit: the clean run before it is stored
+16 bytes at a time (a run is shorter than a block), and a `%` followed by two hex digits is
+decoded through a 256-entry nibble table and consumes them. The two digits are never needles, so
+the rest of the block's mask stays valid; a `%` without two hex digits stays literal. A block
+with no special byte is one load and one store. The string decoders start at a byte to decode
+and run the mask pass at once; the two-buffer decoder of the parsers, whose input is often
+clean, runs the block loop until it meets one and then the mask pass. A clean stretch of 256
+bytes or more, at the start of the two-buffer decoder's input or after a clean block of the
+mask pass, is copied by `copy_clean_run`, 64 bytes per step (128 with AVX2 on x86-64), until a
+step may hold a needle. Fewer than 32 bytes left go through the block loop (the last bytes,
+fewer than a block, through a byte loop). Every wide load and store is guarded by the bytes
+left, and the output never outruns the input, so the over-copy fits the buffer. The separator arguments (`plus`, `amp`, `colon`, `eq`) are what
 each delimiter decodes to, whether literal or produced by `%XX`, and the `encoded` byte, when
 set, stands in for a decoded byte unless it is one of `{ , }`.
 
@@ -71,7 +76,9 @@ the current field and the position of its `=`. On a match it records the value's
 offset and length and returns `0`; if it reaches the end without a match it
 returns `-1`. `get()` turns the recorded offset/length into a `string_view` over
 the *normally* decoded buffer, so the caller sees the real value. A key with no
-`=` is a valid hit with an empty value.
+`=` is a valid hit with an empty value. The scan visits each byte, except that a
+field of 64 bytes or more is crossed 16 bytes at a time to the next `\0` or `\1`
+(`find_byte3`), and so is a value to its `\0`: the bytes in between change nothing.
 
 ## PathParser
 
@@ -91,7 +98,8 @@ that span is the path (`State::PTH`); if it hits an `@`, everything before it is
 the path and everything after is the host (`State::HST`). Each call yields one
 segment and advances; when there is nothing left it returns `State::END`. The
 forward scan clamps its end to whichever of the command / selector / id offsets
-the backward pass found, so the two passes never overlap.
+the backward pass found, so the two passes never overlap. With 64 bytes or more
+left it first crosses them 16 bytes at a time to the first `\0`, `,` or `@`.
 
 `has_pth()` answers whether there is a real path in front of the id, command, or
 selector, which the caller uses to decide whether a path component is present at

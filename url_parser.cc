@@ -42,6 +42,16 @@
 #endif
 
 
+// The functions whose speed is that of a byte loop start on a 32-byte boundary on x86-64: how such
+// a loop falls in the 32-byte fetch window decides its speed on Intel cores, by up to 20% (the
+// loops of `PathParser::init`, which no scan replaces), and where a function starts depends on the
+// size of everything before it in the object. Elsewhere the attribute is not used.
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#define URL_PARSER_ALIGN __attribute__((aligned(32)))
+#else
+#define URL_PARSER_ALIGN
+#endif
+
 namespace {
 // normalize_path is copied verbatim from Xapiand's src/fs.cc (Copyright (c)
 // 2015-2019 Dubalu LLC, MIT). Despite living next to filesystem helpers there,
@@ -50,7 +60,7 @@ namespace {
 // thing url_parser needed from "fs.hh", so it is inlined here to keep this
 // library free of a filesystem dependency.
 
-size_t
+URL_PARSER_ALIGN size_t
 normalize_path(const char* src, const char* end, char* dst, bool slashed, bool keep_slash)
 {
 	int levels = 0;
@@ -95,7 +105,7 @@ normalize_path(const char* src, const char* end, char* dst, bool slashed, bool k
 }
 
 
-std::string
+URL_PARSER_ALIGN std::string
 normalize_path(std::string_view src, bool slashed, bool keep_slash)
 {
 	size_t src_size = src.size();
@@ -203,6 +213,32 @@ skip_clean_avx2(const char* p, const char* end) noexcept
 	return p;
 }
 
+// Copies [p, stop) to `o` (and to `o2` when `Dual`) in 128-byte steps while no step holds a needle,
+// and returns where the first step that may hold one starts (or where fewer than 128 bytes remain).
+// `stop` must leave room for the 128-byte reads, and `o` (and `o2`) for the writes.
+template <bool Dual, int N>
+__attribute__((target("avx2"))) const char*
+copy_clean_avx2(const char* p, const char* stop, char* o, char* o2) noexcept
+{
+	while (stop - p >= 128) {
+		const __m256i* q = reinterpret_cast<const __m256i*>(p);
+		const __m256i x0 = _mm256_loadu_si256(q), x1 = _mm256_loadu_si256(q + 1);
+		const __m256i x2 = _mm256_loadu_si256(q + 2), x3 = _mm256_loadu_si256(q + 3);
+		const __m256i h = _mm256_or_si256(_mm256_or_si256(maybe_avx2<N>(x0), maybe_avx2<N>(x1)), _mm256_or_si256(maybe_avx2<N>(x2), maybe_avx2<N>(x3)));
+		if (_mm256_movemask_epi8(h)) { break; }
+		__m256i* d = reinterpret_cast<__m256i*>(o);
+		_mm256_storeu_si256(d, x0); _mm256_storeu_si256(d + 1, x1); _mm256_storeu_si256(d + 2, x2); _mm256_storeu_si256(d + 3, x3);
+		if (Dual) {
+			d = reinterpret_cast<__m256i*>(o2);
+			_mm256_storeu_si256(d, x0); _mm256_storeu_si256(d + 1, x1); _mm256_storeu_si256(d + 2, x2); _mm256_storeu_si256(d + 3, x3);
+			o2 += 128;
+		}
+		p += 128;
+		o += 128;
+	}
+	return p;
+}
+
 // Whether the CPU (and the OS) supports AVX2, looked up once.
 inline bool
 has_avx2() noexcept
@@ -243,7 +279,17 @@ swar_first8(const char* p) noexcept
 template <int N>
 struct Scanner {
 	static constexpr const char (&set)[N] = Needles<N>::v;
+#if defined(__aarch64__)
+	// A compare per needle: the byte loops of the short inputs are faster without the load of a
+	// table entry per byte (Apple M1 and M4).
+	static bool is_special(char c) noexcept {
+		bool r = false;
+		for (int i = 0; i < N; ++i) { r |= (c == set[i]); }
+		return r;
+	}
+#else
 	static bool is_special(char c) noexcept { return needle_table<N>.cls[static_cast<unsigned char>(c)] != 0; }
+#endif
 
 #if !defined(URL_PARSER_NO_SIMD) && defined(__ARM_NEON) && defined(__aarch64__)
 	static constexpr size_t W = 16;
@@ -259,13 +305,41 @@ struct Scanner {
 		std::uint64_t m = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(h), 4)), 0);
 		return m ? static_cast<size_t>(__builtin_ctzll(m)) >> 2 : 16;
 	}
-	static size_t first(const char* p) noexcept { return index(hits(vld1q_u8(reinterpret_cast<const uint8_t*>(p)))); }
+	// The first needle among the 16 bytes at `p`. A compare per needle, not the table lookup of `hits`:
+	// the loop that decodes an escape-dense input waits for this result before it can go on, and
+	// the lookup takes longer to deliver it.
+	static size_t first(const char* p) noexcept {
+		uint8x16_t v;
+		std::memcpy(&v, p, 16);
+		uint8x16_t h = vceqq_u8(v, vdupq_n_u8(static_cast<uint8_t>(set[0])));
+		for (int i = 1; i < N; ++i) { h = vorrq_u8(h, vceqq_u8(v, vdupq_n_u8(static_cast<uint8_t>(set[i])))); }
+		return index(h);
+	}
 	// One bit per byte (bit 4 * i for byte i), set where the byte is a needle.
 	static std::uint64_t mask(const char* p) noexcept {
 		uint8x16_t h = hits(vld1q_u8(reinterpret_cast<const uint8_t*>(p)));
 		return vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(h), 4)), 0) & 0x8888888888888888ULL;
 	}
 	static size_t pos(std::uint64_t m) noexcept { return static_cast<size_t>(__builtin_ctzll(m)) >> 2; }
+	// True, after storing the 64 bytes at `p` at `o` (and at `o2` when `Dual`), when none of them is a
+	// needle. One test and one branch cover four vectors.
+	template <bool Dual>
+	static bool copy_clean64(const char* p, char* o, char* o2) noexcept {
+		const uint8_t* q = reinterpret_cast<const uint8_t*>(p);
+		uint8x16_t x0, x1, x2, x3;
+		std::memcpy(&x0, q, 16);
+		std::memcpy(&x1, q + 16, 16);
+		std::memcpy(&x2, q + 32, 16);
+		std::memcpy(&x3, q + 48, 16);
+		if (vmaxvq_u8(vorrq_u8(vorrq_u8(hits(x0), hits(x1)), vorrq_u8(hits(x2), hits(x3))))) { return false; }
+		uint8_t* d = reinterpret_cast<uint8_t*>(o);
+		vst1q_u8(d, x0); vst1q_u8(d + 16, x1); vst1q_u8(d + 32, x2); vst1q_u8(d + 48, x3);
+		if (Dual) {
+			d = reinterpret_cast<uint8_t*>(o2);
+			vst1q_u8(d, x0); vst1q_u8(d + 16, x1); vst1q_u8(d + 32, x2); vst1q_u8(d + 48, x3);
+		}
+		return true;
+	}
 	static const char* find(const char* p, const char* end) noexcept {
 		// One vector first: a byte to decode near the start costs one test, not four.
 		if (end - p >= 16) {
@@ -321,6 +395,23 @@ struct Scanner {
 			return exact(x);
 		}
 	}
+	// True, after storing the 64 bytes at `p` at `o` (and at `o2` when `Dual`), when none of them is a
+	// needle (a false answer may follow the stores too). One test and one branch cover four vectors.
+	template <bool Dual>
+	static bool copy_clean64(const char* p, char* o, char* o2) noexcept {
+		const __m128i* q = reinterpret_cast<const __m128i*>(p);
+		const __m128i x0 = _mm_loadu_si128(q), x1 = _mm_loadu_si128(q + 1);
+		const __m128i x2 = _mm_loadu_si128(q + 2), x3 = _mm_loadu_si128(q + 3);
+		const __m128i h = _mm_or_si128(_mm_or_si128(maybe(x0), maybe(x1)), _mm_or_si128(maybe(x2), maybe(x3)));
+		if (_mm_movemask_epi8(h)) { return false; }
+		__m128i* d = reinterpret_cast<__m128i*>(o);
+		_mm_storeu_si128(d, x0); _mm_storeu_si128(d + 1, x1); _mm_storeu_si128(d + 2, x2); _mm_storeu_si128(d + 3, x3);
+		if (Dual) {
+			d = reinterpret_cast<__m128i*>(o2);
+			_mm_storeu_si128(d, x0); _mm_storeu_si128(d + 1, x1); _mm_storeu_si128(d + 2, x2); _mm_storeu_si128(d + 3, x3);
+		}
+		return true;
+	}
 	static const char* find(const char* p, const char* end) noexcept {
 		// One vector first: a byte to decode near the start costs one test, not four.
 		if (end - p >= 16) {
@@ -368,6 +459,52 @@ struct Scanner {
 #endif
 };
 
+// The first byte of [p, end) equal to `A`, `B` or `C`, or `end`: 16 bytes at a time (64 while 64
+// remain) with NEON or SSE2, one at a time without. For the loops of the parsers that skip the
+// bytes between the delimiters, which they would otherwise visit one by one.
+template <char A, char B, char C>
+inline const char*
+find_byte3(const char* p, const char* end) noexcept
+{
+#if !defined(URL_PARSER_NO_SIMD) && defined(__ARM_NEON) && defined(__aarch64__)
+	const uint8x16_t va = vdupq_n_u8(static_cast<uint8_t>(A)), vb = vdupq_n_u8(static_cast<uint8_t>(B)), vc = vdupq_n_u8(static_cast<uint8_t>(C));
+	auto hit = [&](uint8x16_t x) { return vorrq_u8(vorrq_u8(vceqq_u8(x, va), vceqq_u8(x, vb)), vceqq_u8(x, vc)); };
+	while (end - p >= 64) {
+		const uint8_t* q = reinterpret_cast<const uint8_t*>(p);
+		uint8x16_t x0, x1, x2, x3;
+		std::memcpy(&x0, q, 16);
+		std::memcpy(&x1, q + 16, 16);
+		std::memcpy(&x2, q + 32, 16);
+		std::memcpy(&x3, q + 48, 16);
+		if (vmaxvq_u8(vorrq_u8(vorrq_u8(hit(x0), hit(x1)), vorrq_u8(hit(x2), hit(x3))))) { break; }
+		p += 64;
+	}
+	while (end - p >= 16) {
+		uint8x16_t x;
+		std::memcpy(&x, p, 16);
+		const std::uint64_t m = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(hit(x)), 4)), 0);
+		if (m) { return p + (__builtin_ctzll(m) >> 2); }
+		p += 16;
+	}
+#elif !defined(URL_PARSER_NO_SIMD) && defined(__SSE2__)
+	const __m128i va = _mm_set1_epi8(A), vb = _mm_set1_epi8(B), vc = _mm_set1_epi8(C);
+	auto hit = [&](__m128i x) { return _mm_or_si128(_mm_or_si128(_mm_cmpeq_epi8(x, va), _mm_cmpeq_epi8(x, vb)), _mm_cmpeq_epi8(x, vc)); };
+	while (end - p >= 64) {
+		const __m128i* q = reinterpret_cast<const __m128i*>(p);
+		const __m128i x0 = _mm_loadu_si128(q), x1 = _mm_loadu_si128(q + 1), x2 = _mm_loadu_si128(q + 2), x3 = _mm_loadu_si128(q + 3);
+		if (_mm_movemask_epi8(_mm_or_si128(_mm_or_si128(hit(x0), hit(x1)), _mm_or_si128(hit(x2), hit(x3))))) { break; }
+		p += 64;
+	}
+	while (end - p >= 16) {
+		const unsigned m = static_cast<unsigned>(_mm_movemask_epi8(hit(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)))));
+		if (m) { return p + __builtin_ctz(m); }
+		p += 16;
+	}
+#endif
+	for (; p != end; ++p) { if (*p == A || *p == B || *p == C) { return p; } }
+	return end;
+}
+
 // The output byte for the special byte at `s`: the cursor `p` moves past it (and past the two
 // hex digits of a valid escape). `plain` is the byte before the separators are mapped.
 __attribute__((always_inline)) inline char
@@ -404,6 +541,22 @@ decode_special(const char* s, const char*& p, const char* end, const Subst& m, c
 	*o++ = c;
 }
 
+// Copies the clean bytes at the start of [p, end) to `o` (and to `o2` when `Dual`), 64 bytes a step
+// (128 with AVX2) while a step holds no byte to decode, and returns where the first step that may
+// hold one starts; the caller goes on from there. Out of line, and for 256 bytes or more: a short
+// input never reaches it, and the blocks of its own loop stay as the compiler lays them out.
+template <bool Dual, int N>
+__attribute__((noinline)) const char*
+copy_clean_run(const char* p, const char* end, char* o, char* o2) noexcept
+{
+	const char* q = p;
+#if defined(URL_PARSER_AVX2)
+	if (has_avx2()) { q = copy_clean_avx2<Dual, N>(q, end, o, o2); }
+#endif
+	while (static_cast<size_t>(end - q) >= 64 && Scanner<N>::template copy_clean64<Dual>(q, o + (q - p), Dual ? o2 + (q - p) : nullptr)) { q += 64; }
+	return q;
+}
+
 // How many bytes of one call the mask pass of `decode_core` takes. On arm64 it takes them all. On
 // x86-64 it takes the first 4 KB: its loop over the specials of a block ends after a count that
 // varies from block to block, and on Intel cores those exits mispredict once the input is too
@@ -424,6 +577,58 @@ constexpr size_t mask_limit = 4096;
 #define URL_PARSER_CORE_ATTR __attribute__((noinline))
 #endif
 
+// The mask pass of `decode_core`, for the 16-byte scanners: one vector test per block, then each
+// special of the block from its bit, no rescan per special. A decoded escape consumes two hex
+// digits, which are never needles, so the bits of the block stay valid. Runs of clean bytes are
+// stored 16 at a time, and a long one by `copy_clean_run`; a run is shorter than a block, and 32
+// bytes left leave room for that over-copy. The pass takes at most `mask_limit` bytes; the block
+// loop of the caller takes the rest.
+template <bool Dual, int N>
+__attribute__((always_inline)) inline void
+mask_pass(const char*& p, const char* end, const Subst& m, char*& o, const char* o1, char* o2) noexcept
+{
+	using scan = Scanner<N>;
+	const char* const mask_stop = static_cast<size_t>(end - p) > mask_limit ? p + mask_limit : end;
+	int clean = 0;  // clean blocks in a row
+	while (end - p >= 32 && p < mask_stop) {
+		std::uint64_t mm = scan::mask(p);
+		if (!mm) {
+			std::memcpy(o, p, 16);
+			if (Dual) { std::memcpy(o2 + (o - o1), p, 16); }
+			p += 16;
+			o += 16;
+			// Four clean blocks in a row suggest a long run; fewer would call it for every run
+			// of an input with a byte to decode every few dozen bytes.
+			if (++clean >= 4 && static_cast<size_t>(end - p) >= 256) {
+				const char* const q = copy_clean_run<Dual, N>(p, end, o, Dual ? o2 + (o - o1) : nullptr);
+				o += q - p;
+				p = q;
+				clean = 0;
+			}
+			continue;
+		}
+		clean = 0;
+		const char* block = p;
+		const char* src = p;
+		do {
+			const char* s = block + scan::pos(mm);
+			mm &= mm - 1;
+			const size_t run = static_cast<size_t>(s - src);
+			std::memcpy(o, src, 16);
+			if (Dual) { std::memcpy(o2 + (o - o1), src, 16); }
+			o += run;
+			decode_special<Dual>(s, p, end, m, o, o1, o2);
+			src = p;
+		} while (mm);
+		if (src < block + 16) {
+			std::memcpy(o, src, 16);
+			if (Dual) { std::memcpy(o2 + (o - o1), src, 16); }
+			o += block + 16 - src;
+			p = block + 16;
+		}
+	}
+}
+
 // One pass over [p, end), the decoded bytes written through `o1` and, when `Dual`,
 // the bytes of the plain decoding (`urldecode(p, size)` defaults) through `o2`; the
 // two outputs always have the same length, which is returned. Blocks of clean bytes
@@ -431,47 +636,29 @@ constexpr size_t mask_limit = 4096;
 // output advances only past the bytes before the first special one. `o1` (and `o2`)
 // must have room for the whole input, which also covers the over-copy (output never
 // outruns input).
-template <bool Dual, int N>
-URL_PARSER_CORE_ATTR size_t
-decode_core(const char* p, const char* end, const Subst& m, char* o1, char* o2) noexcept
+//
+// The block loop is the whole of the work on clean input. The mask pass takes over from the first
+// byte to decode: at once for the string decoders, which start at one, and after the first one
+// for the two-buffer decoder of the parsers, whose input is often clean.
+template <bool Dual, int N, bool Wide>
+__attribute__((always_inline)) inline size_t
+decode_loop(const char* p, const char* end, const Subst& m, char* o1, char* o2) noexcept
 {
 	using scan = Scanner<N>;
 	char* o = o1;
+	// The mask pass has yet to run (16-byte scanners, two-buffer decoder).
+	bool lazy = scan::W == 16 && Dual && Wide;
 
-	if constexpr (scan::W == 16) {
-		// One vector test per block, then each special of the block from its bit: no rescan
-		// per special. A decoded escape consumes two hex digits, which are never needles, so
-		// the bits of the block stay valid. Runs of clean bytes are stored 16 at a time; a
-		// run is shorter than a block, and 32 bytes left leave room for that over-copy. The
-		// pass takes at most `mask_limit` bytes of a call; the block loop below takes the rest.
-		const char* const mask_stop = static_cast<size_t>(end - p) > mask_limit ? p + mask_limit : end;
-		while (end - p >= 32 && p < mask_stop) {
-			std::uint64_t mm = scan::mask(p);
-			if (!mm) {
-				std::memcpy(o, p, 16);
-				if (Dual) { std::memcpy(o2 + (o - o1), p, 16); }
-				p += 16;
-				o += 16;
-				continue;
+	if constexpr (scan::W == 16 && Wide) {
+		if constexpr (Dual) {
+			// A long clean stretch at the start goes in bulk.
+			if (static_cast<size_t>(end - p) >= 256) {
+				const char* const q = copy_clean_run<Dual, N>(p, end, o, o2);
+				o += q - p;
+				p = q;
 			}
-			const char* block = p;
-			const char* src = p;
-			do {
-				const char* s = block + scan::pos(mm);
-				mm &= mm - 1;
-				const size_t run = static_cast<size_t>(s - src);
-				std::memcpy(o, src, 16);
-				if (Dual) { std::memcpy(o2 + (o - o1), src, 16); }
-				o += run;
-				decode_special<Dual>(s, p, end, m, o, o1, o2);
-				src = p;
-			} while (mm);
-			if (src < block + 16) {
-				std::memcpy(o, src, 16);
-				if (Dual) { std::memcpy(o2 + (o - o1), src, 16); }
-				o += block + 16 - src;
-				p = block + 16;
-			}
+		} else {
+			mask_pass<Dual, N>(p, end, m, o, o1, o2);
 		}
 	}
 
@@ -501,8 +688,42 @@ decode_core(const char* p, const char* end, const Subst& m, char* o1, char* o2) 
 		}
 		decode_special<Dual>(s, p, end, m, o, o1, o2);
 		if (p == end) { break; }
+		if constexpr (scan::W == 16 && Dual && Wide) {
+			if (lazy) {
+				lazy = false;
+				mask_pass<Dual, N>(p, end, m, o, o1, o2);
+			}
+		}
 	}
 	return static_cast<size_t>(o - o1);
+}
+
+// The wide form of the decode, for 32 bytes or more: the block loop and the mask pass.
+template <bool Dual, int N>
+URL_PARSER_CORE_ATTR URL_PARSER_ALIGN size_t
+decode_core(const char* p, const char* end, const Subst& m, char* o1, char* o2) noexcept
+{
+	return decode_loop<Dual, N, true>(p, end, m, o1, o2);
+}
+
+// The block loop alone, expanded where it is called, for fewer than 32 bytes: no set-up of the
+// rest, and the small paths of `decode_string` keep the loop in their own frame.
+template <bool Dual, int N>
+__attribute__((always_inline)) inline size_t
+decode_lean(const char* p, const char* end, const Subst& m, char* o1, char* o2) noexcept
+{
+	return decode_loop<Dual, N, false>(p, end, m, o1, o2);
+}
+
+// The decode of [p, end) in the form that fits its length.
+template <bool Dual, int N>
+__attribute__((always_inline)) inline size_t
+decode_run(const char* p, const char* end, const Subst& m, char* o1, char* o2) noexcept
+{
+	if constexpr (Scanner<N>::W == 16) {
+		if (end - p >= 32) { return decode_core<Dual, N>(p, end, m, o1, o2); }
+	}
+	return decode_lean<Dual, N>(p, end, m, o1, o2);
 }
 
 inline bool
@@ -553,7 +774,7 @@ decode_on_stack(const char* q, const char* first, const char* end, const Subst& 
 	// The input has at least 17 bytes here: the first 16 are copied whole, the rest of the head by length.
 	std::memcpy(tmp, q, 16);
 	if (head > 16) { std::memcpy(tmp + 16, q + 16, head - 16); }
-	return std::string(tmp, head + decode_core<false, N>(first, end, m, tmp + head, nullptr));
+	return std::string(tmp, head + decode_run<false, N>(first, end, m, tmp + head, nullptr));
 }
 
 template <int N>
@@ -580,7 +801,7 @@ decode_string(const char* q, const char* end, const Subst& m)
 				// The clean head, with fixed-size copies (a call to memcpy costs more than the rest).
 				std::memcpy(tmp, q, 8);
 				if (head > 8) { std::memcpy(tmp + head - 8, q + head - 8, 8); }
-				return std::string(tmp, head + decode_core<false, N>(first, end, m, tmp + head, nullptr));
+				return std::string(tmp, head + decode_lean<false, N>(first, end, m, tmp + head, nullptr));
 			}
 		}
 		char tmp[Scanner<N>::W];
@@ -588,7 +809,7 @@ decode_string(const char* q, const char* end, const Subst& m)
 		const char* s = q;
 		while (s != end && !Scanner<N>::is_special(*s)) { *o++ = *s++; }
 		if (s == end) { return std::string(q, size); }
-		return std::string(tmp, static_cast<size_t>(o - tmp) + decode_core<false, N>(s, end, m, o, nullptr));
+		return std::string(tmp, static_cast<size_t>(o - tmp) + decode_lean<false, N>(s, end, m, o, nullptr));
 	}
 	const char* first = Scanner<N>::find(q, end);
 	// Clean input (nothing to decode or map): one copy, no zero-fill.
@@ -598,14 +819,14 @@ decode_string(const char* q, const char* end, const Subst& m)
 		char tmp[Scanner<N>::W];
 		const size_t head = static_cast<size_t>(first - q);
 		std::memcpy(tmp, q, Scanner<N>::W);
-		return std::string(tmp, head + decode_core<false, N>(first, end, m, tmp + head, nullptr));
+		return std::string(tmp, head + decode_lean<false, N>(first, end, m, tmp + head, nullptr));
 	}
 	if (size >= stack_min && size <= stack_max) { return decode_on_stack<N>(q, first, end, m); }
 	const size_t head = static_cast<size_t>(first - q);
 	std::string buf;
 	fill(buf, size, [&](char* d) {
 		std::memcpy(d, q, head);
-		return head + decode_core<false, N>(first, end, m, d + head, nullptr);
+		return head + decode_run<false, N>(first, end, m, d + head, nullptr);
 	});
 	return buf;
 }
@@ -625,12 +846,12 @@ urldecode(const void *p, size_t size, char plus, char amp, char colon, char eq, 
 
 
 // Fills `a` with urldecode(p, size, m...) and `b` with urldecode(p, size), in one pass.
-static void
+URL_PARSER_ALIGN static void
 urldecode2(const char* p, size_t size, const Subst& m, std::string& a, std::string& b)
 {
 	a.resize(size);
 	b.resize(size);
-	size_t n = size ? decode_core<true, 5>(p, p + size, m, &a[0], &b[0]) : 0;
+	size_t n = size ? decode_run<true, 5>(p, p + size, m, &a[0], &b[0]) : 0;
 	a.resize(n);
 	b.resize(n);
 }
@@ -658,7 +879,7 @@ QueryParser::rewind() noexcept
 }
 
 
-int
+URL_PARSER_ALIGN int
 QueryParser::init(std::string_view q)
 {
 	clear();
@@ -667,7 +888,7 @@ QueryParser::init(std::string_view q)
 }
 
 
-int
+URL_PARSER_ALIGN int
 QueryParser::next(const char *name, size_t name_len)
 {
 	const char *ni = query.data();
@@ -685,6 +906,10 @@ QueryParser::next(const char *name, size_t name_len)
 		return -1;
 	}
 
+	// A long field (64 bytes or more): go to its end 16 bytes at a time. The loop below does nothing for the bytes
+	// that are not '\0' or '\1' but step over them.
+	if (nf - n1 >= 64) { n1 = find_byte3<'\0', '\1', '\1'>(n1, nf); }
+
 	while (true) {
 		char cn = (n1 == nf) ? '\0' : *n1;
 		switch (cn) {
@@ -695,6 +920,7 @@ QueryParser::next(const char *name, size_t name_len)
 				if (name_len == static_cast<size_t>(n1 - n0) && std::strncmp(n0, name, n1 - n0) == 0) {
 					if (v0 != nullptr) {
 						const char *v1 = v0 + 1;
+						if (nf - v1 >= 64) { v1 = find_byte3<'\0', '\0', '\0'>(v1, nf); }
 						while (true) {
 							char cv = (v1 == nf) ? '\0' : *v1;
 							switch (cv) {
@@ -763,7 +989,7 @@ PathParser::rewind() noexcept
 }
 
 
-PathParser::State
+URL_PARSER_ALIGN PathParser::State
 PathParser::init(std::string_view p)
 {
 	auto np = normalize_path(p, false, true);
@@ -965,7 +1191,7 @@ PathParser::init(std::string_view p)
 }
 
 
-PathParser::State
+URL_PARSER_ALIGN PathParser::State
 PathParser::next()
 {
 	char cn;
@@ -994,6 +1220,9 @@ PathParser::next()
 	if (n1 > nf) {
 		return State::END;
 	}
+
+	// A long path (64 bytes or more): go to the first byte that ends it or starts the host, 16 bytes at a time.
+	if (n1 >= ni && nf - n1 >= 64) { n1 = find_byte3<'\0', ',', '@'>(n1, nf); }
 
 	cn = '\xff';
 	while (true) {
