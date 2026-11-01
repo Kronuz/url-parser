@@ -4,10 +4,11 @@ project(url_parser LANGUAGES CXX)
 include(FetchContent)
 
 # --- Dependency: char-classify ---
-# url_parser.cc includes "chars.hh" for chars::hexdec (the percent-escape hex
-# decoder used by urldecode). That header lives in the sibling char-classify
-# library, pulled in here so the include resolves. We track its tip with
-# GIT_TAG main, like the rest of the family.
+# The library has no dependency of its own (urldecode decodes hex through a local
+# table). test/urldecode_old.h, the reference decoder of the differential test, the
+# fuzz target and the benchmark, includes "chars.hh" for chars::hexdec; that header
+# lives in the sibling char-classify library. It is linked PUBLIC for its include path
+# and pinned to a commit.
 FetchContent_Declare(
   char_classify
   GIT_REPOSITORY https://github.com/Kronuz/char-classify.git
@@ -57,11 +58,31 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_compile_definitions(url_parser_diff_swar PRIVATE URL_PARSER_NO_SIMD=1)
   add_test(NAME url_parser_diff_swar COMMAND url_parser_diff_swar)
 
+  # On x86-64 the same test with the AVX2 skip left out (the default build uses it where the CPU has it).
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    add_executable(url_parser_diff_noavx2 test/urldecode_diff.cc)
+    target_include_directories(url_parser_diff_noavx2 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
+    target_link_libraries(url_parser_diff_noavx2 PRIVATE char_classify::char_classify)
+    target_compile_features(url_parser_diff_noavx2 PRIVATE cxx_std_20)
+    target_compile_definitions(url_parser_diff_noavx2 PRIVATE URL_PARSER_NO_AVX2=1)
+    add_test(NAME url_parser_diff_noavx2 COMMAND url_parser_diff_noavx2)
+  endif()
+
+  # Timing guards: short input costs no more than the reference decoder, and the scan takes
+  # several vectors per step. Each ratio compares two things timed in the same process; the
+  # test is skipped (status 77) in unoptimized and sanitized builds, and runs alone.
+  add_executable(url_parser_perf test/perf_guard.cc)
+  target_include_directories(url_parser_perf PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
+  target_link_libraries(url_parser_perf PRIVATE char_classify::char_classify)
+  target_compile_features(url_parser_perf PRIVATE cxx_std_20)
+  add_test(NAME url_parser_perf COMMAND url_parser_perf)
+  set_tests_properties(url_parser_perf PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+
   # libFuzzer target (Clang): cmake -DURL_PARSER_FUZZ=ON -DCMAKE_CXX_COMPILER=clang++
   option(URL_PARSER_FUZZ "Build the libFuzzer target" OFF)
   if(URL_PARSER_FUZZ)
     add_executable(url_parser_fuzz fuzz/fuzz_parse.cc url_parser.cc)
-    target_include_directories(url_parser_fuzz PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_include_directories(url_parser_fuzz PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
     target_link_libraries(url_parser_fuzz PRIVATE char_classify::char_classify)
     target_compile_features(url_parser_fuzz PRIVATE cxx_std_20)
     target_compile_options(url_parser_fuzz PRIVATE -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all)

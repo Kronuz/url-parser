@@ -59,7 +59,7 @@ static std::string make_query(size_t target, int kind, std::mt19937& rng) {
 int main() {
 	std::mt19937 rng(42);
 	const char* names[] = {"clean", "few-escapes", "25%-escapes"};
-	for (size_t sz : {32u, 256u, 4096u, 65536u}) {
+	for (size_t sz : {8u, 16u, 32u, 256u, 4096u, 65536u}) {
 		for (int kind = 0; kind < 3; ++kind) {
 			std::string q = make_query(sz, kind, rng);
 			std::string wl = "urldecode " + std::to_string(sz) + "B " + names[kind];
