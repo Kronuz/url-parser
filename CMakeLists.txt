@@ -164,6 +164,15 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
       if(NOT sweep_${variant}_POPULATED)
         FetchContent_Populate(sweep_${variant})
       endif()
+      # The headers of two commits can be the same file, and GCC reads a `#pragma once` file once by its
+      # content and time, so the second variant would lose its declarations. Each one is read once, under
+      # its own names, by its api header.
+      set(header_path "${CMAKE_BINARY_DIR}/sweep-src/${variant}/url_parser.h")
+      file(READ "${header_path}" header)
+      if(header MATCHES "#pragma once")
+        string(REPLACE "#pragma once" "" header "${header}")
+        file(WRITE "${header_path}" "${header}")
+      endif()
     endfunction()
     url_parser_sweep_fetch(orig 4424e25c53c54ae5697ddae2dd643885d921b4e2)
     url_parser_sweep_fetch(prev 9ce4c230cb324470e0205d233c0ad088d29fc694)
