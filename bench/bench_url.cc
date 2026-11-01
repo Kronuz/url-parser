@@ -113,4 +113,53 @@ int main() {
 		};
 		bh::row("url", wl.c_str(), "old init decode x2", bh::measure(old), q.size());
 	}
+
+	// Short input with an escape: the cost of the set-up shows here, and against the byte loop
+	// of the reference decoder it is the row that decides whether the small path pays.
+	for (const char* in : {"a%41", "x+yz", "%41bc", "ab%20cde", "k+v%2Bab", "a=b&c%3Dd"}) {
+		const std::string q = in;
+		std::string wl = "urldecode " + std::to_string(q.size()) + "B escape " + q;
+		auto cur = [&](uint64_t n) { for (uint64_t i = 0; i < n; ++i) { auto s = urldecode(q); bh::use(s); } };
+		auto cur_qs = [&](uint64_t n) { for (uint64_t i = 0; i < n; ++i) { auto s = urldecode(q.data(), q.size(), ' ', '\0', '\0', '\1', '%'); bh::use(s); } };
+		auto old = [&](uint64_t n) { for (uint64_t i = 0; i < n; ++i) { auto s = old_urldecode(q.data(), q.size()); bh::use(s); } };
+		bh::row("url", wl.c_str(), "current", bh::measure(cur), q.size());
+		bh::row("url", wl.c_str(), "current (query set)", bh::measure(cur_qs), q.size());
+		bh::row("url", wl.c_str(), "frozen old", bh::measure(old), q.size());
+	}
+
+	// QueryParser over a query with no separator, escape or '+': the whole input is one clean run.
+	for (size_t sz : {128u, 1024u}) {
+		std::string q;
+		while (q.size() < sz) { q += char('a' + rng() % 26); }
+		std::string wl = "QueryParser clean " + std::to_string(sz) + "B";
+		auto run = [&](uint64_t n) {
+			QueryParser qp;
+			for (uint64_t i = 0; i < n; ++i) {
+				qp.init(q);
+				qp.rewind(); if (qp.next("key0") == 0) bh::use(qp.get());
+				qp.rewind(); if (qp.next("key1") == 0) bh::use(qp.get());
+				qp.rewind(); if (qp.next("nokey") == 0) bh::use(qp.get());
+			}
+		};
+		bh::row("url", wl.c_str(), "current #1", bh::measure(run), q.size());
+		bh::row("url", wl.c_str(), "current #2 (A/A)", bh::measure(run), q.size());
+	}
+
+	// PathParser: init, then next until the path is consumed.
+	for (size_t sz : {8u, 16u, 32u, 64u, 256u}) {
+		std::string p = "/idx";
+		while (p.size() < sz) { p += "/seg" + std::to_string(rng() % 100); }
+		p.resize(sz);
+		std::string wl = "PathParser init+next " + std::to_string(sz) + "B";
+		auto run = [&](uint64_t n) {
+			PathParser pp;
+			for (uint64_t i = 0; i < n; ++i) {
+				auto st = pp.init(p);
+				int k = 0;
+				while (st != PathParser::State::END && st < PathParser::State::INVALID_STATE && k++ < 8) { st = pp.next(); bh::use(pp.get_pth()); }
+			}
+		};
+		bh::row("url", wl.c_str(), "current #1", bh::measure(run), p.size());
+		bh::row("url", wl.c_str(), "current #2 (A/A)", bh::measure(run), p.size());
+	}
 }

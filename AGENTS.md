@@ -16,7 +16,7 @@ test/next_model.cc           CTest `url_parser_next_model`: QueryParser::next an
 test/perf_guard.cc           Timing guards (CTest `url_parser_perf`): short input is no slower than the reference decoder, and the scan takes several vectors per step. Skipped in unoptimized and sanitized builds.
 fuzz/fuzz_parse.cc           libFuzzer target (-DURL_PARSER_FUZZ=ON): urldecode with fuzzed substitutes against the reference decoder, and both parsers' buffers.
 fuzz/url.dict               libFuzzer dictionary of the bytes and sequences that matter (`url_parser_fuzz -dict=fuzz/url.dict`).
-bench/bench_url.cc           Benchmark vs the reference decoder, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON).
+bench/bench_url.cc           Benchmark vs the reference decoder, a LUT decoder and ada (cmake -DURL_PARSER_BENCH=ON): urldecode from 4 bytes to 64 KB, QueryParser and PathParser (CI builds it).
 test/test.cc                 Runnable smoke test: urldecode, QueryParser, PathParser, and the normalize_path collapsing.
 examples/demo.cc             A runnable tour (not a test).
 CMakeLists.txt               STATIC library `url_parser` (+ alias url_parser::url_parser); FetchContent char-classify; CTest test `url_parser`.
