@@ -1,25 +1,31 @@
 # url-parser: a request path split into its parts, and query keys read on demand.
 # Render: d2 --layout elk --sketch --theme 302 docs/url-parser.d2 docs/url-parser.svg
-direction: right
+vars: { d2-config: { layout-engine: elk; theme-id: 302; sketch: true; pad: 24 } }
+grid-rows: 2
+grid-columns: 2
+horizontal-gap: 180
+vertical-gap: 100
 
 path: path {
-  label: "twitter@node1/1234:count"
+  width: 300
+  height: 160
+  label: "request path\ntwitter@node1/1234:count"
 }
-
 parts: PathParser {
-  hst: "host: node1"
-  pth: "path: twitter"
-  id: "id: 1234"
-  cmd: "command: :count"
+  width: 300
+  height: 160
+  label: "PathParser\nhost: node1 · path: twitter\nid: 1234 · command: :count"
 }
-
 query: query {
-  label: "foo=1&bar=hello%20world&flag"
+  width: 300
+  height: 160
+  label: "query string\nfoo=1&bar=hello%20world&flag"
 }
-
 qp: QueryParser {
-  label: "next(\"bar\") → \"hello world\"\nnext(\"flag\") → \"\""
+  width: 300
+  height: 160
+  label: "QueryParser\nnext(\"bar\") → \"hello world\"\nnext(\"flag\") → \"\""
 }
 
 path -> parts: "init() · next()"
-query -> qp
+query -> qp: "next(key)"
