@@ -112,7 +112,8 @@ static void check_one(const std::string& in, size_t misalign) {
 		CHECK(qp.query_decoded == spec(sv, ' ', '&', ';', '=', '\0'));
 		PathParser pp;
 		pp.init(sv);
-		const auto np = normalize_path(sv, false, true);
+		auto np = normalize_path(sv, false, true);
+		if (np == ".") { np.clear(); }  // the current directory, however it is spelled, is the empty path to the parser
 		CHECK(pp.path == spec(np, ' ', '&', ';', '=', '%'));
 		CHECK(pp.path_decoded == spec(np, ' ', '&', ';', '=', '\0'));
 	}

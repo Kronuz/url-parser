@@ -110,14 +110,17 @@ all.
 Before either pass, `init()` runs the path through `normalize_path`. This helper
 is copied from Xapiand's `src/fs.cc`, as the fs library has it. It lives among
 filesystem helpers there, but it touches nothing on disk: it is a single pass over
-the buffer that pops a component for each `..`, collapses repeated `/`, and trims (or,
-with `keep_slash`, keeps) a trailing slash. A `..` pops the first component of a
-relative path like any other (`a/..` is `.`, `a/../b` is `b`); the root and a leading
-`.` or `..` are never popped, so the result cannot climb above them. An empty path,
-and a default-constructed view, is empty. `url_parser` calls it as
-`normalize_path(p, false, true)`, so doubled slashes and `..`/`.` segments are gone
-before the parser ever looks at the string. Inlining it is the whole reason this
-library has no `fs` dependency.
+the buffer that returns the lexical normal form of Python's `os.path.normpath`: empty and
+`.` components are dropped, repeated `/` collapse, and a `..` removes the component
+before it, the first of a relative path included (`a/..` is `.`, `a/../b` is `b`). The root
+absorbs a `..` (`/../a` is `/a`); a relative path keeps the `..` it cannot remove (`../a`
+stays). The current directory has one spelling, `.`, for `""`, `.`, `./`, `a/..`, `a/../` and
+`./a/..`, and a default-constructed view is the empty path. The trailing slash is the flags'
+policy: `keep_slash` keeps the input's. `url_parser` calls it as `normalize_path(p, false, true)`,
+so doubled slashes and `..`/`.` segments are gone before the parser ever looks at the string; a
+path with no `.` and no `//` is its own normal form and is not copied. The parser reads the
+current directory, however it is spelled, as the empty path. Inlining the helper is the whole
+reason this library has no `fs` dependency.
 
 ## Why this shape
 

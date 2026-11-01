@@ -55,15 +55,14 @@
 namespace {
 // normalize_path is copied from Xapiand's src/fs.cc (Copyright (c)
 // 2015-2019 Dubalu LLC, MIT), as the fs library (github.com/Kronuz/fs) has it
-// since its fixes for the empty path, a null view and the first component of a
-// relative path. Despite living next to filesystem helpers there, it is pure
+// since it returns os.path.normpath's normal form. Despite living next to filesystem helpers there, it is pure
 // string manipulation: it collapses "..", "//", and trailing slashes in a single
 // pass over the buffer, touching nothing on disk. It is the only thing
 // url_parser needed from "fs.hh", so it is inlined here to keep this library
 // free of a filesystem dependency.
 
-// Whether [p, end) has no '.' and no "//": the loop of normalize_path then has nothing to fold. (fs's
-// loop does not have this fast path, nor the inner loop over a run of ordinary bytes: they give its bytes.)
+// Whether [p, end) has no '.' and no "//": a non-empty path like that is its own normal form with `keep_slash`
+// (a leading '/' is one root, the trailing '/' is kept), which is what PathParser::init skips the helper for.
 inline bool
 plain_path(const char* p, const char* end) noexcept
 {
@@ -76,98 +75,62 @@ plain_path(const char* p, const char* end) noexcept
 	return true;
 }
 
+// The lexical normal form of a path, as Python's os.path.normpath makes it: empty and "." components are
+// dropped, a ".." removes the component before it, a relative path keeps the ".." it cannot remove
+// ("../x" stays), the root absorbs a ".." ("/.." is "/"), a run of leading '/' is one root, and the
+// current directory is "." however it is spelled ("", ".", "./", "x/..", "./x/.."). A component of three or
+// more dots is a name. The trailing '/' is the flags' policy: none; `slashed` adds one; `keep_slash`
+// keeps the input's (the root is always "/"). `dst` holds (end - src) + 2 bytes. Returns the length.
+// This is the loop of the fs library's normalize_path (github.com/Kronuz/fs, fs.cc), byte for byte in its results.
 URL_PARSER_ALIGN size_t
 normalize_path(const char* src, const char* end, char* dst, bool slashed, bool keep_slash)
 {
-	// With keep_slash (what PathParser asks for) a path with no '.' and no "//" comes out as it went in.
-	if (keep_slash && plain_path(src, end)) {
-		const size_t n = static_cast<size_t>(end - src);
-		if (n != 0) { std::memcpy(dst, src, n); }
-		return n;
+	char* const ret = dst;
+	const bool absolute = src < end && *src == '/';
+	const bool had_slash = src < end && end[-1] == '/';
+	if (absolute) {
+		*dst++ = '/';
 	}
-	int levels = 0;
-	char* ret = dst;
-	char ch = '\0';
-	const char* begin = src;
-	// The first component of the output so far is dots only (a leading "." or ".."), and is still open.
-	bool first_dots = true;
-	bool first_open = true;
-	// A ".." popped every component, so the path is "." unless something follows.
-	bool emptied = false;
-	// Visit every byte of [src, end), then the closing '/' of the last component unless keep_slash.
-	// An empty path has no last component, so it gets no closing '/' (that would name the root).
-	// There is no end - 1, so a default-constructed view (a null src) is the empty path.
-	bool closing = !keep_slash && src < end;
-	while (src < end || closing) {
-		bool from_input = true;
+	char* const base = dst;  // the output after the root
+	while (src < end) {
+		const char* name = src;
+		while (src < end && *src != '/') {
+			++src;
+		}
+		const size_t size = static_cast<size_t>(src - name);
 		if (src < end) {
-			ch = *src++;
-		} else {
-			ch = '/';
-			closing = false;
-			from_input = false;
+			++src;
 		}
-		if (ch == '.' && (levels != 0 || dst == ret || *(dst - 1) == '/' )) {
-			*dst++ = ch;
-			++levels;
-		} else if (ch == '/') {
-			// A ".." pops back to the '/' before the component it removes. The root is never popped,
-			// nor the dots of a leading "." or ".."; the first component of a relative path is popped
-			// like any other, and nothing is left (the path is then "." or what follows).
-			const bool open = dst != ret;
-			char* const floor = open && (*ret == '/' || first_dots) ? ret + 1 : ret;
-			while (levels != 0 && dst > floor) {
-				if (*--dst == '/') {
-					--levels;
-				}
+		if (size == 0 || (size == 1 && name[0] == '.')) {
+			continue;
+		}
+		if (size == 2 && name[0] == '.' && name[1] == '.') {
+			char* last = dst;  // the start of the last component of the output
+			while (last > base && last[-1] != '/') {
+				--last;
 			}
-			if (open && dst == ret) {
-				levels = 0;
-				emptied = true;
-				first_dots = true;
-				first_open = true;
-			} else if (dst == ret ? (from_input && src == begin + 1) : (*(dst - 1) != '/')) {
-				*dst++ = ch;
-				if (dst - ret > 1) {
-					first_open = false;
-				}
+			if (dst > base && !(dst - last == 2 && last[0] == '.' && last[1] == '.')) {
+				dst = last > base ? last - 1 : base;  // drop it and the '/' before it
+				continue;
 			}
-		} else {
-			// A name, or dots inside one: copy it with the bytes that follow it up to the next '.' or '/'
-			// (each of those is handled exactly as this one is).
-			*dst++ = ch;
-			levels = 0;
-			bool name = ch != '.';
-			while (src < end && *src != '.' && *src != '/') {
-				*dst++ = *src++;
-				name = true;
-			}
-			ch = src[-1];
-			if (first_open && name) {
-				first_dots = false;
+			if (absolute) {
+				continue;
 			}
 		}
-	}
-	if (ch == '.' && levels == 1) {
-		ch = *--dst;
-	}
-	if (dst == ret && emptied) {
-		*dst++ = '.';
-		if (slashed || (keep_slash && end[-1] == '/')) {
+		if (dst > base) {
 			*dst++ = '/';
 		}
-	} else if (dst > ret + 1 && !keep_slash) {
-		if (slashed) {
-			if (ch != '/') {
-				*dst++ = '/';
-			}
-		} else {
-			if (ch == '/') {
-				--dst;
-			}
+		for (size_t i = 0; i < size; ++i) {
+			*dst++ = name[i];
 		}
 	}
-	return dst - ret;
+	if (dst == ret) {
+		*dst++ = '.';
+	}
+	if ((keep_slash ? had_slash : slashed) && dst[-1] != '/') {
+		*dst++ = '/';
+	}
+	return static_cast<size_t>(dst - ret);
 }
 
 
@@ -177,7 +140,7 @@ normalize_path(std::string_view src, bool slashed, bool keep_slash)
 	size_t src_size = src.size();
 	const char* src_str = src.data();
 	std::string dst;
-	dst.resize(src_size + 1);
+	dst.resize(src_size + 2);
 	auto dst_size = normalize_path(src_str, src_str + src_size, &dst[0], slashed, keep_slash);
 	dst.resize(dst_size);
 	return dst;
@@ -1058,10 +1021,23 @@ PathParser::rewind() noexcept
 URL_PARSER_ALIGN PathParser::State
 PathParser::init(std::string_view p)
 {
-	auto np = normalize_path(p, false, true);
+	// The path as normalize_path(p, false, true) leaves it. A path with nothing to fold (the common one: no '.', no
+	// "//") is its own normal form and is decoded from where it is, with no copy of it made.
+	std::string np;
+	const char* src = p.data();
+	size_t src_size = p.size();
+	if (src_size != 0 && !plain_path(src, src + src_size)) {
+		np = normalize_path(p, false, true);
+		src = np.data();
+		src_size = np.size();
+	}
+	// The current directory, however it is spelled ("", ".", "x/..": normalize_path says "."), is no path here.
+	if (src_size == 1 && src[0] == '.') { src_size = 0; }
 
-	clear();
-	urldecode2(np.data(), np.size(), Subst{' ', '&', ';', '=', '%'}, path, path_decoded);
+	rewind();
+	off_id = nullptr;
+	len_id = 0;
+	urldecode2(src, src_size, Subst{' ', '&', ';', '=', '%'}, path, path_decoded);
 
 	char cn;
 	size_t length;

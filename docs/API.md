@@ -47,13 +47,15 @@ path (`State::PTH`) or, for a `path@host` segment, the host
 
 ## Caveats
 
-- `normalize_path` resolves `..` against the component before it, as
-  `std::filesystem::path::lexically_normal` does, and collapses `//`: `a/b/../c`
-  parses as path `a`, id `c`, `a/../b` as id `b` with no path, and `x//y` as path
-  `x`, id `y`. The root is never popped and a leading `..` is not resolved
-  (`/../a` is `/a`, `../a` is `./a`), so a request path can never climb above its
-  root or its start. An empty path, and a default-constructed `string_view`, stays
-  empty. This is not RFC 3986's `remove_dot_segments`, which is defined for
-  absolute paths and maps the relative `a/../b` to `/b`.
+- `normalize_path` gives the lexical normal form of Python's `os.path.normpath`: it
+  resolves `..` against the component before it, drops `.` and collapses `//`:
+  `a/b/../c` parses as path `a`, id `c`, `a/../b` as id `b` with no path, and `x//y`
+  as path `x`, id `y`. The root absorbs a `..` (`/../a` is `/a`), so an absolute path
+  can never climb above its root; a relative path keeps the `..` it cannot remove
+  (`../a` is path `..`, id `a`). The current directory has one spelling, `.`, for
+  `""`, `.`, `./`, `a/..` and `./a/..`, and the parser reads it as the empty path: no
+  path, no id. A trailing `/` is kept (`a/../` is the path `./`). This is not RFC 3986's
+  `remove_dot_segments`, which is defined for absolute paths and maps the relative
+  `a/../b` to `/b`.
 - `QueryParser::get()` returns a view into the parser's decoded buffer, valid
   until the next `init()`.

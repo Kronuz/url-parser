@@ -8,6 +8,26 @@ library has no releases.
 
 ### Fixed
 
+- `normalize_path` returns the lexical normal form of Python's `os.path.normpath` (owner ruling), and the
+  current directory has one spelling, `.`, for `""`, `.`, `./`, `x/..`, `x/../` and `./x/..`. Before, the empty
+  path was `""` and `.` with `keep_slash` was `""`, and with `keep_slash` the last component stayed as
+  written (`a/..` stayed `a/..`). Now a `..` removes the component before it, the first included; a relative
+  path keeps the `..` it cannot remove (`../x` stays `../x`, where it was `./x`; `x/../..` is `..`); the root
+  absorbs it (`/x/..` and `/..` are `/`); a leading `./` is dropped; a component of three or more dots is a
+  name (`...` popped two components); a run of leading `/` is one root. `keep_slash` keeps the input's
+  trailing `/` and resolves every component, the last one included (`a/..` is `.`, `a/../` is `./`). The
+  loop is the one the fs library has now, byte for byte in its results. The oracle is `os.path.normpath`:
+  `test/normalize_path_test.cc` holds its output for 55 inputs in three flag combinations (the table fails
+  with the previous loop: `""`, `.` and `x/..` gave `""`, `""` and `x`), a stack-of-components model over
+  every string of `a`, `b`, `.` and `/` to 8 bytes, 30,000 random ones and 20,000 of up to 60 bytes in all
+  four flag combinations, the digest of Python's own results over the exhaustive strings, a second
+  normalization that changes nothing, and the original loop's bytes for every non-empty input without a `.`.
+- `PathParser` follows the function, with one rule of its own: the current directory, however it is spelled,
+  is the empty path (no path, no id), as `""` and `.` were before; it is not the id `.`. What changes for the
+  parser is the paths that differ above: `a/..` is the empty path (it was the path `a/..` with the id `..`),
+  `a/b/..` is the path `a` (it stayed `a/b/..`), and `../a` is the path `..` with the id `a` (it was the path
+  `.`). `a/../b`, `a/b/../c`, `x//y` and `foo/./bar` parse as before. A path with no `.` and no `//` is its
+  own normal form and `PathParser::init` decodes it from where it is, with no temporary string.
 - Clean input is no slower than before the mask pass. The mask pass costs about a quarter more
   than the block loop on a clean 16-byte block (two loop conditions and a spilled bound per
   block), which made the decode of a clean query of 128 bytes to 1 KB (`urldecode2`, the part of
@@ -44,6 +64,8 @@ library has no releases.
   `next` of an 8-byte path 0.96x to 0.83x of the previous decoder on the M4; this copy copies a path
   with no `.` and no `//` when `keep_slash` is set, and a run of ordinary bytes in an inner loop
   otherwise, and gives fs's bytes.
+  The first entry of this section supersedes what this one says of the empty path, a leading `..`, the
+  spelling of the current directory and the last component with `keep_slash`.
 
 ### Added
 
@@ -86,9 +108,26 @@ The repo bench (56 rows): the slowest row is 0.86x on the M4 (the 8-byte path; 7
 escapes; 31 rows under 0.97, all of 4 to 33 bytes) and 0.94x on the i9 (`QueryParser::init` + 3 lookups
 of 15 to 31 bytes; 11 rows under 0.97).
 
+### Measured against the original decoder
+
+The rows above compare with the decoder of `9ce4c23`, the first rewrite. A same-run sweep of the public entry
+points over 4 to 64 bytes (187 rows: `urldecode` with the default and the query substitution set,
+`QueryParser::init` + 3 lookups, `PathParser::init` + `next`; clean, few-escape, 25%-escape, separator and
+query-like input), `-O3`, `quiet strict`, nine interleaved rounds per row with the library timed twice (the
+A/A) beside `test/urldecode_old.h` and the original parsers (`4424e25`, built under other names in one binary),
+at `2c9ea8e`: no row is slower than the original decoder. The slowest is 1.11x faster on the M4 Pro
+(`QueryParser` of a 4-byte query with an escape) and 1.10x on the i9 (`urldecode` of 4 bytes with an escape,
+query set). The rows under 0.97x in the table above are against `9ce4c23`, which is a decoder with no
+frame to set up for a few bytes: 57 of the 187 rows on the M4 (worst 0.73, `urldecode` of 48 bytes, 25%
+escapes, query set) and 49 on the i9 (worst 0.78, `QueryParser` of 31 clean bytes). Where they come from:
+on the i9 `QueryParser::next` runs the same byte loop as `9ce4c23` 10 to 20% slower at 24 to 64 bytes (the
+`next`-only rows, the code identical in both binaries: where the loop falls in the fetch window), and
+`init` is level with it; on the M4 `next` is level and `init` (the two-buffer decode, `urldecode2`) is 5 to 14%
+slower at 8 to 33 bytes.
+
 ### Known problems
 
-- The 8 to 33 byte rows above stay under 0.97x on the M4 and for `QueryParser` on the i9. On the
+- The 8 to 33 byte rows above stay under 0.97x of `9ce4c23` on the M4 and for `QueryParser` on the i9. On the
   M4 the small paths of `urldecode` keep a 16-byte buffer on the stack, and the stack protector's
   canary costs about 2.5 ns per call, which is the whole difference (removing it, with
   `no_stack_protector`, gave 0.84x to 1.1x on the 16-byte row and moved `QueryParser` in the same binary by

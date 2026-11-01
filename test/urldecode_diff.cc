@@ -65,6 +65,7 @@ static void check_one(const std::string& in) {
 	PathParser pp;
 	pp.init(sv);
 	auto np = normalize_path(sv, false, true);
+	if (np == ".") { np.clear(); }  // the current directory, however it is spelled, is the empty path to the parser
 	CHECK(pp.path == old_urldecode(np.data(), np.size(), ' ', '&', ';', '=', '%'));
 	CHECK(pp.path_decoded == old_urldecode(np.data(), np.size()));
 }

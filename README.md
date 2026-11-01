@@ -19,8 +19,9 @@ selector, and `:command`. For HTTP servers that route on structured paths.
   `get()`; bare flags have an empty value.
 - **`PathParser`**: the last segment is the id; `:command`, `{field,selector}`,
   and `path@host` are split off for you.
-- **Normalized first.** `//` collapses and `..` removes the component before it,
-  so a path cannot climb above its root.
+- **Normalized first.** `//` collapses, `.` is dropped and `..` removes the component before
+  it, so an absolute path cannot climb above its root; a relative path keeps the `..` it
+  cannot remove (`../a` stays).
 
 ## 📦 Installation
 
