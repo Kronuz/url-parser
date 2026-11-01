@@ -58,6 +58,14 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   target_compile_features(url_parser_spec PRIVATE cxx_std_20)
   add_test(NAME url_parser_spec COMMAND url_parser_spec)
 
+  # QueryParser::next and PathParser::next against the byte loops they replace, on buffers with
+  # long fields and delimiters at every offset of the vector steps.
+  add_executable(url_parser_next_model test/next_model.cc)
+  target_include_directories(url_parser_next_model PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(url_parser_next_model PRIVATE char_classify::char_classify)
+  target_compile_features(url_parser_next_model PRIVATE cxx_std_20)
+  add_test(NAME url_parser_next_model COMMAND url_parser_next_model)
+
   # The same test with the portable SWAR scanner forced (the default scanner is NEON or SSE2).
   add_executable(url_parser_diff_swar test/urldecode_diff.cc)
   target_include_directories(url_parser_diff_swar PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
