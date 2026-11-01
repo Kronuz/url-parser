@@ -94,7 +94,7 @@ time, and `%XX` goes through a nibble table. Short input is decoded into a stack
 the string is built once. `QueryParser::init` and `PathParser::init` fill both
 buffers in the same pass.
 
-Median time per call, 4 KB inputs (`bench/bench_url.cc`, `-O3`, `quiet strict`):
+Median time per call, 4 KB inputs (`bench/bench_url.cc`, `-O3`, on an otherwise idle machine):
 
 | Input | Apple M4 Pro (clang 17) | Intel i9-9980HK (Apple clang 17) |
 |---|---:|---:|

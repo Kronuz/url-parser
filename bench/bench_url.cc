@@ -1,5 +1,5 @@
 // urldecode / QueryParser::init vs the reference decoder, a single-pass LUT decoder and
-// (when built with ada) ada::unicode::percent_decode. Time it under a quiet hold.
+// (when built with ada) ada::unicode::percent_decode. Time it on an otherwise idle machine.
 #include <cstdlib>
 #include <cstring>
 #include <random>

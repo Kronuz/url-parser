@@ -91,7 +91,7 @@ library has no releases.
 ### Measured
 
 `bench/bench_url.cc` and the sweep of `urldecode`, `QueryParser` and `PathParser` over sizes of 4 to
-1024 bytes and clean, few-escape, 25%-escape and separator inputs, `-O3`, `quiet strict`, two rounds, the
+1024 bytes and clean, few-escape, 25%-escape and separator inputs, `-O3`, on an otherwise idle machine, two rounds, the
 previous decoder (`9ce4c23`) built the same way beside it. The unit is the ratio of the previous
 decoder's time to this one's (above 1 is faster):
 
@@ -113,7 +113,7 @@ of 15 to 31 bytes; 11 rows under 0.97).
 The rows above compare with the decoder of `9ce4c23`, the first rewrite. A same-run sweep of the public entry
 points over 4 to 64 bytes (187 rows: `urldecode` with the default and the query substitution set,
 `QueryParser::init` + 3 lookups, `PathParser::init` + `next`; clean, few-escape, 25%-escape, separator and
-query-like input), `-O3`, `quiet strict`, nine interleaved rounds per row with the library timed twice (the
+query-like input), `-O3`, on an otherwise idle machine, nine interleaved rounds per row with the library timed twice (the
 A/A) beside `test/urldecode_old.h` and the original parsers (`4424e25`, built under other names in one binary),
 at `2c9ea8e`: no row is slower than the original decoder. The slowest is 1.11x faster on the M4 Pro
 (`QueryParser` of a 4-byte query with an escape) and 1.10x on the i9 (`urldecode` of 4 bytes with an escape,
@@ -178,7 +178,7 @@ slower at 8 to 33 bytes.
 
 ### Measured
 
-`bench/bench_url.cc` with ada, `-O3`, `quiet strict`, median of two rounds, against the
+`bench/bench_url.cc` with ada, `-O3`, on an otherwise idle machine, median of two rounds, against the
 previous decoder (`9ce4c23`) on the same machine; no row is more than 3% slower on either
 machine:
 
