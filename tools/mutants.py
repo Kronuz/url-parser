@@ -97,7 +97,7 @@ MUTANTS = [
     Mutant("N6", "a popped component leaves its '/'",
            "dst = last > floor ? last - 1 : floor;", "dst = last;", NORMALIZE),
     Mutant("N7", "a '..' that cannot pop does not become the floor",
-           "\t\t\t\tfloor = p;  // a relative path keeps a \"..\" it cannot pop\n", "", NORMALIZE),
+           "\t\t\t\tdst = floor = p;  // a relative path keeps a \"..\" it cannot pop\n", "\t\t\t\tdst = p;  // a relative path keeps a \"..\" it cannot pop\n", NORMALIZE),
     Mutant("N8", "`slashed` adds no slash",
            "(keep_slash ? had_slash : slashed)", "(keep_slash ? had_slash : false)", NORMALIZE),
     Mutant("N9", "a '//' path counts as plain",
