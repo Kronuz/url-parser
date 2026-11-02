@@ -67,6 +67,22 @@ library has no releases.
   The first entry of this section supersedes what this one says of the empty path, a leading `..`, the
   spelling of the current directory and the last component with `keep_slash`.
 
+### Changed
+
+- `normalize_path` follows the fs library's one pass (fs `CHANGELOG.md`, 2026-11-01): each name is copied
+  to the output as it is read and kept or dropped at its `/`, a `..` that pops no longer scans back over a
+  `..` prefix, and the string overload builds a path of up to 510 bytes on the stack and copies it once.
+  The bytes are the same as the loop of 8934dbc on every input: `test/normalize_path_test.cc` compares them
+  in all four flag combinations over every string of `/`, `.`, `a`, `b` up to length 10 and of `/`, `.`, `a`
+  up to length 12, 800,000 random strings of names and of bytes, and every path length from 0 to 600, on
+  exact-size heap blocks (an AddressSanitizer build fails on a byte read or written past the
+  `(end - src) + 2` bytes the contract gives). The nine normalize mutants of `tools/mutants.py` (`N1` to
+  `N9`) are all killed by `url_parser_normalize`. Only a path with a `.` or a `//` reaches the function
+  (`plain_path` skips it for the rest), and no row of `bench/bench_url.cc` does, so no row moves; on the fs
+  bench (the same loop, M4 Pro and i9) the loop is 1.1x to 1.9x faster than at START on 12 of its 14 rows
+  on the M4 and on all 14 on the i9; `np_keep_slash` ties on the M4 and `a/b/c/d` is 0.92x of START there
+  (fs issue #1).
+
 ### Added
 
 - `test/normalize_path_test.cc` (CTest `url_parser_normalize`): the above, with the frozen loop and
