@@ -77,6 +77,8 @@ of representative paths.
 
 ## 📚 Documentation
 
+- [The Bag of Holding](https://kronuz.github.io/blog/bag-of-holding/):
+  the Familiars post that covers `url-parser` among the small helpers.
 - [docs/API.md](docs/API.md): `urldecode`, `QueryParser`, `PathParser`, and
   caveats.
 - [ARCHITECTURE.md](ARCHITECTURE.md): the decoder and the two-pass path parser.
